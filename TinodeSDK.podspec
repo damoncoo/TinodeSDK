@@ -1,5 +1,6 @@
 Pod::Spec.new do |s|
   s.name = "TinodeSDK"
+  s.version = "0.0.1"
   s.summary = "TinodeSDK "
   s.homepage = "https://github.com/damoncoo/TinodeSDK"
   s.license = { :type => "Attribution License", :file => "LICENSE" }
