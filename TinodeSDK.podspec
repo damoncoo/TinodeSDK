@@ -8,7 +8,7 @@ Pod::Spec.new do |s|
   s.authors = { "Damon" => "damoncoo@gmail.com" }
   s.social_media_url = "https://twitter.com/damoncoo"
   s.ios.deployment_target = "10.0"
-  s.source_files = "*.swift, model/*.swift"
+  s.source_files = "TinodeSDK/*.swift, TinodeSDK/model/*.swift"
   s.requires_arc = true
   s.dependency "SwiftWebSocket"
 end
