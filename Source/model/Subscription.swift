@@ -2,12 +2,12 @@
 //  Subscription.swift
 //  ios
 //
-//  Copyright © 2019 Tinode. All rights reserved.
+//  Copyright © 2019-2022 Tinode LLC. All rights reserved.
 //
 
 import Foundation
 
-public class LastSeen: Decodable {
+public class LastSeen: Codable {
     public var when: Date?
     public var ua: String?
     public init(when: Date?, ua: String?) {
@@ -30,7 +30,7 @@ public class LastSeen: Decodable {
 // Messages may send subscriptions with different
 // public and private types. We need to have a common type
 // to handle subscriptions with all these types.
-public protocol SubscriptionProto: class, Decodable {
+public protocol SubscriptionProto: AnyObject, Decodable {
     var user: String? { get set }
     var topic: String? { get set }
     var updated: Date? { get set }
@@ -53,6 +53,9 @@ public protocol SubscriptionProto: class, Decodable {
     func serializePriv() -> String?
     @discardableResult
     func deserializePriv(from data: String?) -> Bool
+    func serializeTrusted() -> String?
+    @discardableResult
+    func deserializeTrusted(from data: String?) -> Bool
 
     static func createByName(name: String?) -> SubscriptionProto?
 }
@@ -91,8 +94,9 @@ public class Subscription<SP: Codable, SR: Codable>: SubscriptionProto {
     public var clear: Int? = 0
     public var getClear: Int { return clear ?? 0 }
     public var pub: SP?
+    public var trusted: TrustedType?
     public var seen: LastSeen?
-    public var payload: Payload? = nil
+    public var payload: Payload?
 
     public var uniqueId: String? {
         if topic == nil {
@@ -104,10 +108,10 @@ public class Subscription<SP: Codable, SR: Codable>: SubscriptionProto {
         return topic! + ":" + user!
     }
 
-    private enum CodingKeys : String, CodingKey {
+    private enum CodingKeys: String, CodingKey {
         case user, updated, deleted, touched,
              acs, read, recv, priv = "private", online,
-             topic, seq, clear, pub = "public", seen
+             topic, seq, clear, pub = "public", trusted, seen
     }
 
     func updateAccessMode(ac: AccessChange?) {
@@ -118,19 +122,27 @@ public class Subscription<SP: Codable, SR: Codable>: SubscriptionProto {
     }
 
     func merge(sub: Subscription<SP, SR>) -> Bool {
-        var changed = 0
+        var changed = false
         if user == nil && !(sub.user?.isEmpty ?? true) {
             user = sub.user
-            changed += 1
+            changed = true
         }
         if sub.updated != nil && (updated == nil || updated! < sub.updated!) {
             updated = sub.updated
             if sub.pub != nil {
                 pub = sub.pub
             }
-            changed += 1
-        } else if pub == nil && sub.pub != nil {
-            pub = sub.pub
+            if sub.trusted != nil {
+                trusted = sub.trusted
+            }
+            changed = true
+        } else {
+            if pub == nil && sub.pub != nil {
+                pub = sub.pub
+            }
+            if trusted == nil && sub.trusted != nil {
+                trusted = sub.trusted
+            }
         }
         if sub.touched != nil && (touched == nil || touched! < sub.touched!) {
             touched = sub.touched
@@ -141,27 +153,27 @@ public class Subscription<SP: Codable, SR: Codable>: SubscriptionProto {
         if sub.acs != nil {
             if acs == nil {
                 self.acs = Acs(from: sub.acs!)
-                changed += 1
+                changed = true
             } else {
-                changed += (acs!.merge(from: sub.acs) ? 1 : 0)
+                changed = acs!.merge(from: sub.acs) || changed
             }
         }
 
         if getRead < sub.getRead {
             read = sub.getRead
-            changed += 1
+            changed = true
         }
         if getRecv < sub.getRecv {
             recv = sub.getRecv
-            changed += 1
+            changed = true
         }
         if getClear < sub.getClear {
             clear = sub.getClear
-            changed += 1
+            changed = true
         }
         if getSeq < sub.getSeq {
             seq = sub.getSeq
-            changed += 1
+            changed = true
         }
         if sub.priv != nil {
             priv = sub.priv
@@ -171,18 +183,18 @@ public class Subscription<SP: Codable, SR: Codable>: SubscriptionProto {
         }
         if (topic?.isEmpty ?? true) && !(sub.topic?.isEmpty ?? true) {
             topic = sub.topic
-            changed += 1
+            changed = true
         }
         if sub.seen != nil {
             if seen == nil {
                 seen = sub.seen
-                changed += 1
+                changed = true
             } else {
-                changed += (seen!.merge(seen: sub.seen) ? 1 : 0)
+                changed = seen!.merge(seen: sub.seen) || changed
             }
         }
 
-        return changed > 0
+        return changed
     }
     public func serializePub() -> String? {
         guard let p = pub else { return nil }
@@ -204,6 +216,18 @@ public class Subscription<SP: Codable, SR: Codable>: SubscriptionProto {
     public func deserializePriv(from data: String?) -> Bool {
         if let p: SR = Tinode.deserializeObject(from: data) {
             self.priv = p
+            return true
+        }
+        return false
+    }
+    public func serializeTrusted() -> String? {
+        guard let t = trusted else { return nil }
+        return Tinode.serializeObject(t)
+    }
+    @discardableResult
+    public func deserializeTrusted(from data: String?) -> Bool {
+        if let t: TrustedType = Tinode.deserializeObject(from: data) {
+            self.trusted = t
             return true
         }
         return false

@@ -2,15 +2,15 @@
 //  Topic.swift
 //  ios
 //
-//  Copyright © 2019 Tinode. All rights reserved.
+//  Copyright © 2019-2021 Tinode LLC. All rights reserved.
 //
 
 import Foundation
 
-public protocol Payload: class {
+public protocol Payload: AnyObject {
 }
 
-public protocol TopicProto: class {
+public protocol TopicProto: AnyObject {
     var name: String { get }
     var updated: Date? { get set }
     var touched: Date? { get set }
@@ -37,18 +37,26 @@ public protocol TopicProto: class {
     var isBlocked: Bool { get }
     var isReader: Bool { get }
     var isMuted: Bool { get }
+    var isVerified: Bool { get }
+    var isStaffManaged: Bool { get }
+    var isDangerous: Bool { get }
     var unread: Int { get }
+    var latestMessage: Message? { get set }
 
     func serializePub() -> String?
     func serializePriv() -> String?
+    func serializeTrusted() -> String?
     @discardableResult
     func deserializePub(from data: String?) -> Bool
     @discardableResult
     func deserializePriv(from data: String?) -> Bool
+    @discardableResult
+    func deserializeTrusted(from data: String?) -> Bool
     func topicLeft(unsub: Bool?, code: Int?, reason: String?)
 
     func updateAccessMode(ac: AccessChange?) -> Bool
     func persist(_ on: Bool)
+    func setSetAndFetch(newSeq: Int?)
 
     func allMessagesReceived(count: Int?)
     func allSubsReceived()
@@ -74,7 +82,7 @@ public enum TopicType: Int {
 }
 
 // Cannot make it a class constant because Swift is poorly designed: "Static stored properties not supported in generic types"
-fileprivate let kIntervalBetweenKeyPresses: TimeInterval = 3.0
+private let kIntervalBetweenKeyPresses: TimeInterval = 3.0
 
 open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, SR: Codable>: TopicProto {
     enum TopicError: Error {
@@ -189,7 +197,7 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         }
     }
 
-    internal weak var tinode: Tinode? = nil
+    internal weak var tinode: Tinode?
     public var name: String = ""
     public var isNew: Bool {
         return Topic.isNewByName(name: name)
@@ -197,103 +205,107 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
 
     public var updated: Date? {
         get {
-            return description?.updated
+            return description.updated
         }
         set {
-            if let nv = newValue, nv > (description?.updated ?? Date.distantPast) {
-                description?.updated = nv
+            if let nv = newValue, nv > (description.updated ?? Date.distantPast) {
+                description.updated = nv
             }
         }
     }
 
     public var touched: Date? {
         get {
-            return description?.touched
+            return description.touched
         }
         set {
-            if let nv = newValue, nv > (description?.touched ?? Date.distantPast) {
-                description?.touched = nv
+            if let nv = newValue, nv > (description.touched ?? Date.distantPast) {
+                description.touched = nv
             }
         }
     }
 
     public var read: Int? {
         get {
-            return description?.read
+            return description.read
         }
         set {
-            if (newValue ?? -1) > (description?.read ?? -1) {
-                description?.read = newValue
+            if (newValue ?? -1) > (description.read ?? -1) {
+                description.read = newValue
             }
         }
     }
 
     public var recv: Int? {
         get {
-            return description?.recv
+            return description.recv
         }
         set {
-            if (newValue ?? -1) > (description?.recv ?? -1) {
-                description?.recv = newValue
+            if (newValue ?? -1) > (description.recv ?? -1) {
+                description.recv = newValue
             }
         }
     }
 
     public var seq: Int? {
         get {
-            return description?.seq
+            return description.seq
         }
         set {
-            if (newValue ?? -1) > (description?.seq ?? -1) {
-                description?.seq = newValue
+            if (newValue ?? -1) > (description.seq ?? -1) {
+                description.seq = newValue
             }
         }
     }
 
     public var clear: Int? {
         get {
-            return description?.clear
+            return description.clear
         }
         set {
-            if (newValue ?? -1) > (description?.clear ?? -1) {
-                description?.clear = newValue
+            if (newValue ?? -1) > (description.clear ?? -1) {
+                description.clear = newValue
             }
         }
     }
 
     public var unread: Int {
-        let unread = (description?.seq ?? 0) - (description?.read ?? 0)
+        let unread = (description.seq ?? 0) - (description.read ?? 0)
         return unread > 0 ? unread : 0
     }
 
-    public var subsLastUpdated: Date? = nil
+    public var subsLastUpdated: Date?
     public var subsUpdated: Date? {
         return subsLastUpdated
     }
     public var accessMode: Acs? {
-        get { return description?.acs }
-        set { description?.acs = newValue }
+        get { return description.acs }
+        set { description.acs = newValue }
     }
     public var defacs: Defacs? {
-        get { return description?.defacs }
-        set { description?.defacs = newValue }
+        get { return description.defacs }
+        set { description.defacs = newValue }
     }
 
     // The bulk of topic data
-    private var description: Description<DP, DR>? = nil
+    private var description: Description<DP, DR>
     public var pub: DP? {
-        get { return description?.pub }
-        set { description?.pub = newValue }
+        get { return description.pub }
+        set { description.pub = newValue }
     }
     public var priv: DR? {
-        get { return description?.priv }
-        set { description?.priv = newValue }
+        get { return description.priv }
+        set { description.priv = newValue }
+    }
+    public var trusted: TrustedType? {
+        get { return description.trusted }
+        set { description.trusted = newValue }
     }
     public var attached = false
-    weak public var listener: Listener? = nil
+    weak public var listener: Listener?
     // Cache of topic subscribers indexed by userID
-    internal var subs: [String:Subscription<SP,SR>]? = nil
-    public var tags: [String]? = nil
+    internal var subs: [String: Subscription<SP, SR>]?
+    public var tags: [String]?
     private var lastKeyPress: Date = Date(timeIntervalSince1970: 0)
 
     public var online: Bool = false {
@@ -304,12 +316,28 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         }
     }
 
-    public var lastSeen: LastSeen? = nil
+    public var lastSeen: LastSeen? {
+        get { return description.seen }
+        set { description.seen = newValue }
+    }
 
     public var maxDel: Int = 0 {
         didSet {
             if maxDel < oldValue {
                 maxDel = oldValue
+            }
+        }
+    }
+
+    private var latestMessageValue: Message?
+    public var latestMessage: Message? {
+        get { return latestMessageValue }
+        set {
+            guard let newLM = newValue else { return }
+            if (latestMessageValue == nil) ||
+                (!newLM.isPending && latestMessageValue!.isPending) ||
+                (newLM.seqId > latestMessageValue!.seqId) {
+                latestMessageValue = newLM
             }
         }
     }
@@ -330,42 +358,64 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         return topicType == .grp
     }
     public var isManager: Bool {
-        return description?.acs?.isManager ?? false
+        return description.acs?.isManager ?? false
     }
     public var isSharer: Bool {
-        return description?.acs?.isSharer ?? false
+        return description.acs?.isSharer ?? false
     }
     public var isMuted: Bool {
-        return description?.acs?.isMuted ?? false
+        return description.acs?.isMuted ?? false
     }
     public var isOwner: Bool {
-        return description?.acs?.isOwner ?? false
+        return description.acs?.isOwner ?? false
     }
     public var isAdmin: Bool {
-        return description?.acs?.isAdmin ?? false
+        return description.acs?.isAdmin ?? false
     }
     public var isReader: Bool {
-        return description?.acs?.isReader ?? false
+        return description.acs?.isReader ?? false
     }
     public var isWriter: Bool {
-        return description?.acs?.isWriter ?? false
+        return description.acs?.isWriter ?? false
     }
     public var isJoiner: Bool {
-        return description?.acs?.isJoiner ?? false
+        return description.acs?.isJoiner ?? false
     }
     public var isBlocked: Bool {
-        return !(description?.acs?.isJoiner(for: Acs.Side.given) ?? false)
+        return !(description.acs?.isJoiner(for: Acs.Side.given) ?? false)
     }
     public var isDeleter: Bool {
-        return description?.acs?.isDeleter ?? false
+        return description.acs?.isDeleter ?? false
     }
     public var isArchived: Bool {
         return false
     }
 
+    public var isVerified: Bool { return description.trusted?.isVerified ?? false }
+    public var isStaffManaged: Bool { return description.trusted?.isStaffManaged ?? false }
+    public var isDangerous: Bool { return description.trusted?.isDangerous ?? false }
+
+    // Returns the maximum recv and read values across all subscriptions
+    // that are not "me" (this user).
+    public var maxRecvReadValues: (Int, Int) {
+        if subs == nil {
+            loadSubs()
+        }
+
+        guard let subs = subs, let me = tinode?.myUid else { return (0, 0) }
+        var maxRecv = 0, maxRead = 0
+        for (key, sub) in subs {
+            if key != me {
+                maxRead = max(maxRead, sub.getRead)
+                maxRecv = max(maxRecv, sub.getRecv)
+            }
+        }
+        return (maxRecv, maxRead)
+    }
+
     // Storage is owned by Tinode.
-    weak public var store: Storage? = nil
-    public var payload: Payload? = nil
+    weak public var store: Storage?
+    public var payload: Payload?
     public var isPersisted: Bool { get { return payload != nil } }
 
     public var cachedMessageRange: MsgRange? {
@@ -389,7 +439,7 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
                 return count + 1
             }
             return count
-        } )
+        })
     }
 
     // Tells how many topic subscribers have reported the message as read.
@@ -402,15 +452,10 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         return msgReadRecvCount(seq: seq, read: false)
     }
 
-    init() {}
-
-    /**
-     * Workaround for the  init() - convenience init() madness.
-     */
-    private func superInit(tinode: Tinode?, name: String, l: Listener? = nil) {
+    init(tinode: Tinode?, name: String, desc: Description<DP, DR>? = nil, l: Listener? = nil) {
         self.tinode = tinode
         self.name = name
-        self.description = Description()
+        self.description = desc ?? Description()
         self.listener = l
 
         if tinode != nil {
@@ -418,24 +463,17 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         }
     }
 
-    init(tinode: Tinode?, name: String, l: Listener? = nil) {
-        self.superInit(tinode: tinode, name: name, l: l)
-    }
-    init(tinode: Tinode?, sub: Subscription<SP, SR>) {
-        self.superInit(tinode: tinode, name: sub.topic!)
-        _ = self.description!.merge(sub: sub)
+    convenience init(tinode: Tinode?, sub: Subscription<SP, SR>) {
+        self.init(tinode: tinode, name: sub.topic!)
+        _ = self.description.merge(sub: sub)
 
         if sub.online != nil {
             self.online = sub.online!
         }
     }
-    init(tinode: Tinode?, name: String, desc: Description<DP, DR>) {
-        self.superInit(tinode: tinode, name: name)
-        _ = self.description!.merge(desc: desc)
-    }
 
     public static func isNewByName(name: String) -> Bool {
-        return name.starts(with: Tinode.kTopicNew)
+        return name.starts(with: Tinode.kTopicNew) || name.starts(with: Tinode.kChannelNew)
     }
     private func setName(name: String) {
         self.name = name
@@ -448,16 +486,27 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         guard let p = priv else { return nil }
         return Tinode.serializeObject(p)
     }
+    public func serializeTrusted() -> String? {
+        guard let t = trusted else { return nil }
+        return Tinode.serializeObject(t)
+    }
     public func deserializePub(from data: String?) -> Bool {
         if let p: DP = Tinode.deserializeObject(from: data) {
-            description?.pub = p
+            description.pub = p
             return true
         }
         return false
     }
     public func deserializePriv(from data: String?) -> Bool {
         if let p: DR = Tinode.deserializeObject(from: data) {
-            description?.priv = p
+            description.priv = p
+            return true
+        }
+        return false
+    }
+    public func deserializeTrusted(from data: String?) -> Bool {
+        if let t: TrustedType = Tinode.deserializeObject(from: data) {
+            description.trusted = t
             return true
         }
         return false
@@ -475,6 +524,9 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         if on {
             if !isPersisted {
                 store?.topicAdd(topic: self)
+               if isP2PType {
+                   tinode?.updateUser(uid: self.name, desc: self.description)
+               }
             }
         } else {
             store?.topicDelete(topic: self)
@@ -482,17 +534,22 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
     }
 
     @discardableResult
-    public func subscribe() -> PromisedReply<ServerMessage> {
-        var setMsg: MsgSetMeta<DP, DR>? = nil
-        var getMsg: MsgGetMeta? = nil
+    func subscribe() -> PromisedReply<ServerMessage> {
+        var setMsg: MsgSetMeta<DP, DR>?
+        var getMsg: MsgGetMeta?
         if isNew {
             setMsg = MsgSetMeta<DP, DR>(
                 desc: MetaSetDesc(pub: self.pub, priv: self.priv),
                 sub: nil,
                 tags: self.tags, cred: nil)
         } else {
-            getMsg = metaGetBuilder()
-                .withDesc().withData().withSub().withTags().build()
+            var mgb = metaGetBuilder()
+                .withDesc().withData().withSub()
+            if self.isMeType || (self.isGrpType && self.isOwner) {
+                // Ask for tags only if it's a 'me' topic or the user is the owner of a 'grp' topic.
+                mgb = mgb.withTags()
+            }
+            getMsg = mgb.build()
         }
         return subscribe(set: setMsg, get: getMsg)
     }
@@ -521,12 +578,17 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         }
         return tnd.subscribe(to: name, set: set, get: get).then(
             onSuccess: { [weak self] msg in
+                if let code = msg?.ctrl?.code, code >= 300 {
+                    // 3XX: status unchanged (alredy subscribed).
+                    self?.attached = true
+                    return nil
+                }
                 let isAttached = self?.attached ?? false
                 if !isAttached {
                     self?.attached = true
                     if let ctrl = msg?.ctrl {
                         if !(ctrl.params?.isEmpty ?? true) {
-                            self?.description?.acs = Acs(from: ctrl.getStringDict(for: "acs"))
+                            self?.description.acs = Acs(from: ctrl.getStringDict(for: "acs"))
                             if self?.isNew ?? false {
                                 self?.updated = ctrl.ts
                                 self?.setName(name: ctrl.topic!)
@@ -534,6 +596,9 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
                             }
                             // update store
                             self?.store?.topicUpdate(topic: self!)
+                            if let t = self, t.isP2PType {
+                                t.tinode?.updateUser(uid: t.name, desc: t.description)
+                            }
                         }
                         self?.listener?.onSubscribe(code: ctrl.code, text: ctrl.text)
                     }
@@ -566,7 +631,7 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         subsLastUpdated = loaded.max(by: {(s1, s2) -> Bool in
             ((s1.updated ?? Date.distantPast) < (s2.updated ?? Date.distantPast))
         })?.updated
-        subs = (Dictionary(uniqueKeysWithValues: loaded.map { ($0.user, $0) }) as! [String : Subscription<SP, SR>])
+        subs = (Dictionary(uniqueKeysWithValues: loaded.map { ($0.user, $0) }) as! [String: Subscription<SP, SR>])
         return subs!.count
     }
 
@@ -603,23 +668,22 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
     }
 
     internal func update(sub: Subscription<SP, SR>) {
-        var changed = false
-        if self.lastSeen == nil {
-            self.lastSeen = sub.seen
-            changed = true
-        } else {
-            changed = self.lastSeen!.merge(seen: sub.seen)
-        }
-        if description?.merge(sub: sub) ?? false, changed {
+        if description.merge(sub: sub) {
             store?.topicUpdate(topic: self)
+            if isP2PType {
+                tinode?.updateUser(uid: self.name, desc: self.description)
+            }
         }
         if let o = sub.online {
             self.online = o
         }
     }
     internal func update(desc: Description<DP, DR>) {
-        if description?.merge(desc: desc) ?? false {
+        if description.merge(desc: desc) {
             store?.topicUpdate(topic: self)
+            if isP2PType {
+                tinode?.updateUser(uid: self.name, desc: self.description)
+            }
         }
     }
     internal func update(tags: [String]) {
@@ -627,8 +691,11 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         store?.topicUpdate(topic: self)
     }
     internal func update(desc: MetaSetDesc<DP, DR>) {
-        if self.description?.merge(desc: desc) ?? false {
+        if self.description.merge(desc: desc) {
             self.store?.topicUpdate(topic: self)
+            if isP2PType {
+                tinode?.updateUser(uid: self.name, desc: self.description)
+            }
         }
     }
     // Topic sent an update to description or subscription, got a confirmation, now
@@ -636,15 +703,13 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
     internal func update(ctrl: MsgServerCtrl, meta: MsgSetMeta<DP, DR>) {
         if let desc = meta.desc {
             self.update(desc: desc)
-            if let d = self.description {
-                self.listener?.onMetaDesc(desc: d)
-            }
+            self.listener?.onMetaDesc(desc: self.description)
         }
         if let sub = meta.sub {
             let acsMap = ctrl.getStringDict(for: "acs")
             self.update(acsMap: acsMap, sub: sub)
-            if sub.user == nil, let description = self.description {
-                self.listener?.onMetaDesc(desc: description)
+            if sub.user == nil {
+                self.listener?.onMetaDesc(desc: self.description)
             }
             self.listener?.onSubsUpdated()
         }
@@ -653,7 +718,7 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
             self.listener?.onMetaTags(tags: tags)
         }
     }
-    internal func update(acsMap: [String:String]?, sub: MetaSetSub) {
+    internal func update(acsMap: [String: String]?, sub: MetaSetSub) {
         var user = sub.user
         var acs: Acs
         if let acsMap = acsMap {
@@ -670,14 +735,17 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         if user == nil || (tinode?.isMe(uid: user) ?? false) {
             user = tinode?.myUid
             var changed = false
-            if self.description?.acs == nil {
-                self.description?.acs = acs
+            if self.description.acs == nil {
+                self.description.acs = acs
                 changed = true
             } else {
-                self.description!.acs!.merge(from: acs)
+                self.description.acs!.merge(from: acs)
             }
             if changed {
                 self.store?.topicUpdate(topic: self)
+                if isP2PType {
+                    tinode?.updateUser(uid: self.name, desc: self.description)
+                }
             }
         }
         if let sub2 = self.getSubscription(for: user) {
@@ -702,7 +770,7 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
 
     private func processSub(newsub: Subscription<SP, SR>) {
         var sub: Subscription<SP, SR>?
-        if (newsub.deleted != nil) {
+        if newsub.deleted != nil {
             store?.subDelete(topic: self, sub: newsub)
             removeSubFromCache(sub: newsub)
 
@@ -722,6 +790,13 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
                 store?.subAdd(topic: self, sub: sub!)
             }
             tinode!.updateUser(sub: sub!)
+            // If this is a change to user's own permissions, update topic too.
+            if tinode!.isMe(uid: newsub.user) && newsub.acs != nil {
+                description.acs = newsub.acs
+                store?.topicUpdate(topic: self)
+                // Notify listener that topic has updated.
+                listener?.onContUpdate(sub: sub!)
+            }
         }
         listener?.onMetaSub(sub: sub!)
     }
@@ -732,7 +807,7 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
     }
 
     internal func routeMetaSub(meta: MsgServerMeta) {
-        if let metaSubs = meta.sub as? Array<Subscription<SP, SR>> {
+        if let metaSubs = meta.sub as? [Subscription<SP, SR>] {
             for newsub in metaSubs {
                 processSub(newsub: newsub)
             }
@@ -784,28 +859,28 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         var result = 0
         switch what {
         case .kRecv:
-            let seq = description!.getSeq
-            if description!.getRecv < seq {
+            let seq = description.getSeq
+            if description.getRecv < seq {
                 if !fromMe {
                     tinode!.noteRecv(topic: name, seq: seq)
                 }
                 result = seq
-                description!.recv = seq
+                description.recv = seq
             }
         case .kRead:
-            let seq = description!.getSeq
-            if explicitSeq != nil || description!.getRead < seq {
+            let seq = description.getSeq
+            if explicitSeq != nil || description.getRead < seq {
                 if !fromMe {
                     tinode!.noteRead(topic: name, seq: explicitSeq ?? seq)
                 }
                 if let eseq = explicitSeq {
-                    if description!.getRead < eseq {
+                    if description.getRead < eseq {
                         result = eseq
-                        description!.read = eseq
+                        description.read = eseq
                     }
                 } else {
                     result = seq
-                    description!.read = seq
+                    description.read = seq
                 }
             }
         case .kKeyPress:
@@ -839,31 +914,37 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         note(what: .kKeyPress)
     }
     private func setSeq(seq: Int) {
-        if description!.getSeq < seq {
-            description!.seq = seq
+        if description.getSeq < seq {
+            description.seq = seq
         }
     }
     private func setRecv(recv: Int) {
-        if description!.getRecv < recv {
-            description!.recv = recv
+        if description.getRecv < recv {
+            description.recv = recv
         }
     }
     private func setRead(read: Int) {
-        if description!.getRead < read {
-            description!.read = read
+        if description.getRead < read {
+            description.read = read
         }
     }
     public func routeData(data: MsgServerData) {
         setSeq(seq: data.getSeq)
         touched = data.ts
         if let s = store {
-            if s.msgReceived(topic: self, sub: getSubscription(for: data.from), msg: data) > 0 {
+            if let msg = s.msgReceived(topic: self, sub: getSubscription(for: data.from), msg: data) {
+                self.latestMessage = msg
                 noteRecv(fromMe: tinode!.isMe(uid: data.from))
             }
         } else {
             noteRecv(fromMe: tinode!.isMe(uid: data.from))
         }
         listener?.onData(data: data)
+
+        // Call notification listener on 'me' to refresh chat list, if appropriate.
+        if let me = tinode?.getMeTopic() {
+            me.setMsgReadRecv(from: self.name, what: "", seq: 0)
+        }
     }
 
     @discardableResult
@@ -872,6 +953,9 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
     }
 
     public func setMeta(meta: MsgSetMeta<DP, DR>) -> PromisedReply<ServerMessage> {
+        if let theCard = meta.desc?.pub as? TheCard {
+            meta.desc?.attachments = theCard.photoRefs
+        }
         return tinode!.setMeta(for: self.name, meta: meta).thenApply({ msg in
             if let ctrl = msg?.ctrl, ctrl.code < ServerMessage.kStatusMultipleChoices {
                 self.update(ctrl: ctrl, meta: meta)
@@ -879,12 +963,15 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
             return nil
         })
     }
+
     public func setDescription(desc: MetaSetDesc<DP, DR>) -> PromisedReply<ServerMessage> {
         return setMeta(meta: MsgSetMeta<DP, DR>(desc: desc, sub: nil, tags: nil, cred: nil))
     }
+
     public func setDescription(pub: DP?, priv: DR?) -> PromisedReply<ServerMessage> {
         return setDescription(desc: MetaSetDesc<DP, DR>(pub: pub, priv: priv))
     }
+
     public func updateDefacs(auth: String?, anon: String?) -> PromisedReply<ServerMessage> {
         let newdacs: Defacs
         if let olddacs = self.defacs {
@@ -897,10 +984,10 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
     }
 
     public func updateAccessMode(ac: AccessChange?) -> Bool {
-        if description!.acs == nil {
-            description!.acs = Acs()
+        if description.acs == nil {
+            description.acs = Acs()
         }
-        return description!.acs!.update(from: ac)
+        return description.acs!.update(from: ac)
     }
     public func setSubscription(sub: MetaSetSub) -> PromisedReply<ServerMessage> {
         return setMeta(meta: MsgSetMeta(desc: nil, sub: sub, tags: nil, cred: nil))
@@ -917,10 +1004,10 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
             uid = nil
         }
         let uidIsSelf = uid == nil || sub == nil
-        if description!.acs == nil {
-            description!.acs = Acs()
+        if description.acs == nil {
+            description.acs = Acs()
         }
-        let mode = AcsHelper(ah: uidIsSelf ? description!.acs!.want : sub!.acs!.given)
+        let mode = AcsHelper(ah: uidIsSelf ? description.acs!.want : sub!.acs!.given)
         if mode.update(from: update) {
             return setSubscription(sub: MetaSetSub(user: uid, mode: mode.description))
         }
@@ -955,7 +1042,7 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         }
         let metaSetSub = MetaSetSub(user: uid, mode: mode)
         return setMeta(meta: MsgSetMeta(desc: nil, sub: metaSetSub, tags: nil, cred: nil))
-            .thenApply { [weak self] msg in
+            .thenApply { [weak self] _ in
                 if let topic = self {
                     topic.store?.subUpdate(topic: topic, sub: sub!)
                     topic.listener?.onMetaSub(sub: sub!)
@@ -979,30 +1066,38 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
             listener?.onSubsUpdated()
             return PromisedReply(error: TinodeError.notSynchronized)
         }
-        return tinode!.delSubscription(topicName: name, user: uid).thenApply({ msg in
+        return tinode!.delSubscription(topicName: name, user: uid).thenApply({ _ in
                 self.store?.subDelete(topic: self, sub: sub)
                 self.removeSubFromCache(sub: sub)
                 self.listener?.onSubsUpdated()
                 return nil
             })
     }
+
+    public func setReadRecvByRemote(from uid: String?, what: String?, seq: Int?) {
+        if let sub = getSubscription(for: uid) {
+            switch what {
+            case Tinode.kNoteRecv:
+                sub.recv = seq
+                store?.msgRecvByRemote(sub: sub, recv: seq)
+            case Tinode.kNoteRead:
+                sub.read = seq
+                if sub.getRecv < sub.getRead {
+                    sub.recv = sub.read
+                    store?.msgRecvByRemote(sub: sub, recv: seq)
+                }
+                store?.msgReadByRemote(sub: sub, read: seq)
+            default:
+                break
+            }
+        }
+    }
+
     public func routeInfo(info: MsgServerInfo) {
         if info.what != Tinode.kNoteKp {
-            if let sub = getSubscription(for: info.from) {
-                switch info.what {
-                case Tinode.kNoteRecv:
-                    sub.recv = info.seq
-                    store?.msgRecvByRemote(sub: sub, recv: info.seq)
-                case Tinode.kNoteRead:
-                    sub.read = info.seq
-                    if sub.getRecv < sub.getRead {
-                        sub.recv = sub.read
-                        store?.msgRecvByRemote(sub: sub, recv: info.seq)
-                    }
-                    store?.msgReadByRemote(sub: sub, read: info.seq)
-                default:
-                    break
-                }
+            setReadRecvByRemote(from: info.from, what: info.what, seq: info.seq)
+            if let t = tinode, t.isMe(uid: info.from), let me = t.getMeTopic() {
+                me.setMsgReadRecv(from: self.name, what: info.what, seq: info.seq)
             }
         }
         listener?.onInfo(info: info)
@@ -1020,26 +1115,31 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         case .kTerm:
             topicLeft(unsub: false, code: ServerMessage.kStatusInternalServerError, reason: "term")
         case .kAcs:
-            if let sub = getSubscription(for: pres.src) {
-                sub.updateAccessMode(ac: pres.dacs)
-                if sub.user == tinode?.myUid {
-                    if self.updateAccessMode(ac: pres.dacs) {
-                        store?.topicUpdate(topic: self)
-                    }
-                }
-                if !sub.acs!.isModeDefined {
-                    if isP2PType {
-                        leave()
-                    }
-                    sub.deleted = Date()
-                    processSub(newsub: sub)
-                }
-            } else {
-                let acs = Acs(from: nil as Acs?)
+            let userId = pres.src ?? tinode!.myUid!
+            var sub = getSubscription(for: userId)
+            if sub == nil {
+                let acs = Acs()
                 acs.update(from: pres.dacs)
                 if acs.isModeDefined {
-                    getMeta(query: metaGetBuilder().withSub(user: pres.src).build())
+                    let s = Subscription<SP, SR>()
+                    s.topic = self.name
+                    s.user = userId
+                    s.acs = acs
+                    s.updated = Date()
+                    if let user: User<SP> = tinode!.getUser(with: userId) {
+                        s.pub = user.pub
+                    } else {
+                        getMeta(query: metaGetBuilder().withSub(user: pres.src).build())
+                    }
+                    sub = s
+                } else {
+                    Tinode.log.error("Invalid access mode update %@", pres.dacs?.description ?? "nil")
                 }
+            } else {
+                sub!.updateAccessMode(ac: pres.dacs)
+            }
+            if let s = sub {
+                processSub(newsub: s)
             }
         default:
             Tinode.log.error("pres message - unknown what: %@", String(describing: pres.what))
@@ -1097,14 +1197,28 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
             setRecv(recv: seq)
         }
         setRead(read: seq)
-        store?.setRead(topic: self, read: seq)
-    }
-    public func publish(content: Drafty, head: [String: JSONValue]?, msgId: Int64) -> PromisedReply<ServerMessage> {
-        var headers = head
-        if content.isPlain && headers?["mime"] != nil {
-            headers?.removeValue(forKey: "mime")
+        if let s = store {
+            s.setRead(topic: self, read: seq)
+            let msg = s.getMessagePreviewById(dbMessageId: id)
+            self.latestMessage = msg
         }
-        return tinode!.publish(topic: name, head: headers, content: content).then(
+    }
+
+    private func publishInternal(content: Drafty, head: [String: JSONValue]?, msgId: Int64) -> PromisedReply<ServerMessage> {
+        var headers = head
+        var attachments: [String]?
+        if content.isPlain {
+            // Plain text content should not have "mime" header. Clear it.
+            headers?.removeValue(forKey: "mime")
+        } else {
+            if headers == nil {
+                headers = [:]
+            }
+            headers!["mime"] = .string(Drafty.kMimeType)
+            attachments = content.entReferences
+        }
+
+        return tinode!.publish(topic: name, head: headers, content: content, attachments: attachments).then(
             onSuccess: { [weak self] msg in
                 self?.processDelivery(ctrl: msg?.ctrl, id: msgId)
                 return nil
@@ -1114,24 +1228,34 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
                 throw err
             })
     }
-    public func publish(content: Drafty) -> PromisedReply<ServerMessage> {
-        let head = !content.isPlain ? Tinode.draftyHeaders(for: content) : nil
+
+    /// Publish content to topic.
+    ///
+    /// - Parameters
+    ///   - content: message content to publish
+    ///   - withExtraHeaders: additional message headers, such as `reply` and `forwarded`; `mime: text/x-drafty` header is added automatically.
+    /// - Returns: `PromisedReply` of the reply `ctrl` message
+    public func publish(content: Drafty, withExtraHeaders extraHeaders: [String: JSONValue]? = nil) -> PromisedReply<ServerMessage> {
         var id: Int64 = -1
         if let s = store {
-            id = s.msgSend(topic: self, data: content, head: head)
+            if let msg = s.msgSend(topic: self, data: content, head: extraHeaders) {
+                self.latestMessage = msg
+                id = msg.msgId
+            }
         }
         if attached {
-            return publish(content: content, head: head, msgId: id)
+            return publishInternal(content: content, head: extraHeaders, msgId: id)
         } else {
             return subscribe()
-                .thenApply({ [weak self] msg in
-                    return self?.publish(content: content, head: head, msgId: id)
+                .thenApply({ [weak self] _ in
+                    return self?.publishInternal(content: content, head: extraHeaders, msgId: id)
                 }).thenCatch({ [weak self] err in
                     self?.store?.msgSyncing(topic: self!, dbMessageId: id, sync: false)
                     throw err
                 })
         }
     }
+
     private func sendPendingDeletes(hard: Bool) -> PromisedReply<ServerMessage>? {
         if let pendingDeletes = self.store?.getQueuedMessageDeletes(topic: self, hard: hard), !pendingDeletes.isEmpty {
             return self.tinode!.delMessage(
@@ -1176,7 +1300,7 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
     }
 
     public func syncOne(msgId: Int64) -> PromisedReply<ServerMessage> {
-        guard let m = store?.getMessageById(topic: self, dbMessageId: msgId) else {
+        guard let m = store?.getMessageById(dbMessageId: msgId) else {
             return PromisedReply<ServerMessage>(value: ServerMessage())
         }
         if m.isDeleted {
@@ -1184,7 +1308,7 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         }
         if m.isReady, let content = m.content {
             store?.msgSyncing(topic: self, dbMessageId: msgId, sync: true)
-            return self.publish(content: content, head: m.head, msgId: msgId)
+            return self.publishInternal(content: content, head: m.head, msgId: msgId)
         }
         return PromisedReply<ServerMessage>(value: ServerMessage())
     }
@@ -1206,8 +1330,20 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         for msg in pendingMsgs {
             let msgId = msg.msgId
             _ = self.store?.msgSyncing(topic: self, dbMessageId: msgId, sync: true)
-            result = self.publish(content: msg.content!, head: msg.head, msgId: msgId)
+            result = self.publishInternal(content: msg.content!, head: msg.head, msgId: msgId)
         }
         return result
+    }
+
+    public func setSetAndFetch(newSeq: Int?) {
+        guard let newSeq = newSeq, newSeq > description.getSeq else { return }
+        let limit = newSeq - description.getSeq
+        self.setSeq(seq: newSeq)
+        if !self.attached {
+            self.subscribe(set: nil, get: self.metaGetBuilder().withLaterData(limit: limit).build()).thenApply({ _ in
+                self.leave()
+                return nil
+            })
+        }
     }
 }

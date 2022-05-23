@@ -2,7 +2,7 @@
 //  MeTopic.swift
 //  TinodeSDK
 //
-//  Copyright © 2020 Tinode. All rights reserved.
+//  Copyright © 2020-2022 Tinode LLC. All rights reserved.
 //
 
 import Foundation
@@ -27,12 +27,9 @@ open class MeTopic<DP: Codable & Mergeable>: Topic<DP, PrivateType, DP, PrivateT
         }
     }
 
-    private var credentials: [Credential]? = nil
+    private var credentials: [Credential]?
 
-    public init(tinode: Tinode?) {
-        super.init(tinode: tinode, name: Tinode.kTopicMe, l: nil)
-    }
-    public init(tinode: Tinode?, l: MeTopic<DP>.Listener?) {
+    public init(tinode: Tinode?, l: MeTopic<DP>.Listener? = nil) {
         super.init(tinode: tinode, name: Tinode.kTopicMe, l: l)
     }
     public init(tinode: Tinode?, desc: Description<DP, PrivateType>) {
@@ -83,7 +80,7 @@ open class MeTopic<DP: Codable & Mergeable>: Topic<DP, PrivateType, DP, PrivateT
         let tnd = tinode!
 
         return tnd.delCredential(cred: cred)
-            .thenApply { [weak self] msg in
+            .thenApply { [weak self] _ in
                 guard let me = self else { return nil }
 
                 let idx = me.findCredIndex(cred: cred, anyUnconfirmed: false)
@@ -102,7 +99,7 @@ open class MeTopic<DP: Codable & Mergeable>: Topic<DP, PrivateType, DP, PrivateT
 
     public func confirmCred(meth: String, response: String) ->PromisedReply<ServerMessage> {
         let cred = Credential(meth: meth, val: nil, resp: response, params: nil)
-        return setMeta(meta: MsgSetMeta(desc: nil, sub: nil, tags: nil, cred: cred));
+        return setMeta(meta: MsgSetMeta(desc: nil, sub: nil, tags: nil, cred: cred))
     }
 
     private func findCredIndex(cred other: Credential, anyUnconfirmed: Bool) -> Int {
@@ -136,7 +133,7 @@ open class MeTopic<DP: Codable & Mergeable>: Topic<DP, PrivateType, DP, PrivateT
         return PromisedReply<ServerMessage>(value: ServerMessage())
     }
 
-    override internal func update(acsMap: [String:String]?, sub: MetaSetSub) {
+    override internal func update(acsMap: [String: String]?, sub: MetaSetSub) {
         var newAcs: Acs
         if let acsMap = acsMap {
             newAcs = Acs(from: acsMap)
@@ -169,6 +166,33 @@ open class MeTopic<DP: Codable & Mergeable>: Topic<DP, PrivateType, DP, PrivateT
         }
     }
 
+    public func setMsgReadRecv(from topicName: String?, what: String?, seq: Int?) {
+        guard let tn = topicName, let topic = tinode?.getTopic(topicName: tn), let seq = seq else { return }
+
+        if seq > 0 {
+            switch what {
+            case Tinode.kNoteRecv:
+                assignRecv(to: topic, recv: seq)
+            case Tinode.kNoteRead:
+                assignRead(to: topic, read: seq)
+            default:
+                break
+            }
+        }
+    }
+
+    override public func routeInfo(info: MsgServerInfo) {
+        guard let what = info.what, what != Tinode.kNoteKp, let src = info.src else { return }
+        if let t = tinode!.getTopic(topicName: src) as? DefaultTopic {
+            t.setReadRecvByRemote(from: info.from, what: what, seq: info.seq)
+        }
+        // If this is an update from the current user, update the contact with the new count too.
+        if tinode!.isMe(uid: info.from) {
+            setMsgReadRecv(from: info.src, what: what, seq: info.seq)
+        }
+        listener?.onInfo(info: info)
+    }
+
     override public func routeMeta(meta: MsgServerMeta) {
         if let cred = meta.cred {
             routeMetaCred(cred: cred)
@@ -191,7 +215,7 @@ open class MeTopic<DP: Codable & Mergeable>: Topic<DP, PrivateType, DP, PrivateT
         }
 
         // "what":"tags" may have src == nil
-        if let topic = pres.src != nil ? tinode!.getTopic(topicName: pres.src!) : nil {
+        if let topic = tinode!.getTopic(topicName: pres.src ?? "") {
             switch what {
             case .kOn: // topic came online
                 topic.online = true
@@ -199,7 +223,7 @@ open class MeTopic<DP: Codable & Mergeable>: Topic<DP, PrivateType, DP, PrivateT
                 topic.online = false
                 topic.lastSeen = LastSeen(when: Date(), ua: nil)
             case .kMsg: // new message received
-                topic.seq = pres.seq
+                topic.setSetAndFetch(newSeq: pres.seq)
                 if pres.act == nil || tinode!.isMe(uid: pres.act!) {
                     assignRead(to: topic, read: pres.seq)
                 }
@@ -248,7 +272,7 @@ open class MeTopic<DP: Codable & Mergeable>: Topic<DP, PrivateType, DP, PrivateT
             }
         }
 
-        if (what == MsgServerPres.What.kGone) {
+        if what == MsgServerPres.What.kGone {
             listener?.onSubsUpdated()
         }
         listener?.onPres(pres: pres)
@@ -270,7 +294,7 @@ open class MeTopic<DP: Codable & Mergeable>: Topic<DP, PrivateType, DP, PrivateT
     }
 
     override internal func routeMetaSub(meta: MsgServerMeta) {
-        if let metaSubs = meta.sub as? Array<Subscription<DP, PrivateType>> {
+        if let metaSubs = meta.sub as? [Subscription<DP, PrivateType>] {
             for sub in metaSubs {
                 if let topic = tinode!.getTopic(topicName: sub.topic!) {
                     if sub.deleted != nil {
@@ -278,13 +302,10 @@ open class MeTopic<DP: Codable & Mergeable>: Topic<DP, PrivateType, DP, PrivateT
                         tinode!.stopTrackingTopic(topicName: sub.topic!)
                     } else {
                         if let t = topic as? DefaultTopic {
-                            t.update(sub: sub as! Subscription<VCard, PrivateType>)
+                            t.update(sub: sub as! Subscription<TheCard, PrivateType>)
                         } else if let t = topic as? DefaultMeTopic {
-                            t.update(sub: sub as! Subscription<VCard, PrivateType>)
-                        } /*else if let t = topic as? DefaultFndTopic {
-                            t.update(sub: sub)
-                        } */
-                        else {
+                            t.update(sub: sub as! Subscription<TheCard, PrivateType>)
+                        } else {
                             Tinode.log.fault("ME.routeMetaSub - failed to update topic %@", String(describing: topic))
                             assert(false)
                         }

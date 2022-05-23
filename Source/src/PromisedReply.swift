@@ -85,7 +85,7 @@ public class PromisedReply<Value> {
     public init() {
         countDownLatch = CountDownLatch(count: 1)
     }
-    public init(value: Value) {
+    public init(value: Value?) {
         state = .resolved(value)
         countDownLatch = CountDownLatch(count: 0)
     }
@@ -94,7 +94,21 @@ public class PromisedReply<Value> {
         countDownLatch = CountDownLatch(count: 0)
     }
 
-    func resolve(result: Value?) throws {
+    public class func allOf(promises waitFor: [PromisedReply]) -> PromisedReply<Void> {
+        let done = PromisedReply<Void>()
+        // Create a separate thread and wait for all promises to resolve.
+        DispatchQueue(label: "co.tinode.promise.allOf").async {
+            for p in waitFor {
+                p.countDownLatch?.await()
+            }
+
+            // We can't do anything if it throws.
+            try? done.resolve(result: nil)
+        }
+        return done
+    }
+
+    public func resolve(result: Value?) throws {
         defer {
             // down the semaphore
             countDownLatch?.countDown()
@@ -109,7 +123,7 @@ public class PromisedReply<Value> {
         }
     }
 
-    func reject(error: Error) throws {
+    public func reject(error: Error) throws {
         defer {
             // down the semaphore
             countDownLatch?.countDown()
@@ -124,6 +138,7 @@ public class PromisedReply<Value> {
             try callOnFailure(err: error)
         }
     }
+
     @discardableResult
     public func then(onSuccess successHandler: SuccessHandler, onFailure failureHandler: FailureHandler = nil) -> PromisedReply<Value> {
         return queue.sync {
@@ -148,10 +163,12 @@ public class PromisedReply<Value> {
             return self.nextPromise!
         }
     }
+
     @discardableResult
     public func thenApply(_ successHandler: SuccessHandler) -> PromisedReply<Value> {
         return then(onSuccess: successHandler, onFailure: nil)
     }
+
     @discardableResult
     public func thenCatch(_ failureHandler: FailureHandler) -> PromisedReply<Value> {
         return then(onSuccess: nil, onFailure: failureHandler)
@@ -160,17 +177,17 @@ public class PromisedReply<Value> {
     public func thenFinally(_ finally: @escaping FinallyHandler) {
         then(
             onSuccess: {
-                msg in try finally()
+                _ in try finally()
                 return nil
             },
             onFailure: {
-                err in try finally()
+                _ in try finally()
                 return nil
         })
     }
 
     private func callOnSuccess(result: Value?) throws {
-        var ret: PromisedReply<Value>? = nil
+        var ret: PromisedReply<Value>?
         do {
             if let sh = successHandler {
                 ret = try sh(result)

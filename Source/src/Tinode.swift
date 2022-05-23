@@ -1,12 +1,10 @@
 //
 //  Tinode.swift
-//  ios
 //
-//  Copyright © 2019 Tinode. All rights reserved.
+//  Copyright © 2019-2022 Tinode LLC. All rights reserved.
 //
 
 import Foundation
-
 
 public enum TinodeJsonError: Error {
     case encode
@@ -50,21 +48,21 @@ public enum TinodeError: LocalizedError, CustomStringConvertible {
 
 // Callback interface called by Connection
 // when it receives events from the websocket.
-public protocol TinodeEventListener: class {
+public protocol TinodeEventListener: AnyObject {
     // Connection established successfully, handshakes exchanged.
     // The connection is ready for login.
     // Params:
     //   code   should be always 201.
     //   reason should be always "Created".
     //   params server parameters, such as protocol version.
-    func onConnect(code: Int, reason: String, params: [String:JSONValue]?)
+    func onConnect(code: Int, reason: String, params: [String: JSONValue]?)
 
     // Connection was dropped.
     // Params:
     //   byServer: true if connection was closed by server.
     //   code: numeric code of the error which caused connection to drop.
     //   reason: error message.
-    func onDisconnect(byServer: Bool, code: Int, reason: String)
+    func onDisconnect(byServer: Bool, code: URLSessionWebSocketTask.CloseCode, reason: String)
 
     // Result of successful or unsuccessful {@link #login} attempt.
     // Params:
@@ -113,16 +111,20 @@ public protocol TinodeEventListener: class {
 public class Tinode {
     public static let kTopicNew = "new"
     public static let kUserNew = "new"
+    public static let kChannelNew = "nch"
     public static let kTopicMe = "me"
     public static let kTopicFnd = "fnd"
     public static let kTopicSys = "sys"
 
     public static let kTopicGrpPrefix = "grp"
     public static let kTopicUsrPrefix = "usr"
+    public static let kTopicChnPrefix = "chn"
 
     // Keys for server-provided limits.
     public static let kMaxMessageSize = "maxMessageSize"
     public static let kMaxSubscriberCount = "maxSubscriberCount"
+    public static let kMaxTagLength = "maxTagLength"
+    public static let kMinTagLength = "minTagLength"
     public static let kMaxTagCount = "maxTagCount"
     public static let kMaxFileUploadSize = "maxFileUploadSize"
 
@@ -133,7 +135,7 @@ public class Tinode {
     internal static let log = Log(subsystem: "co.tinode.tinodesdk")
 
     let kProtocolVersion = "0"
-    let kVersion = "0.16"
+    let kVersion = "0.18"
     let kLibVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String
     let kLocale = Locale.current.languageCode!
     public var OsVersion: String = ""
@@ -142,7 +144,7 @@ public class Tinode {
         static let kFutureExpiryInterval = 3.0
         static let kFutureExpiryTimerTolerance = 0.2
         static let kFutureTimeout = 5.0
-        private var futuresDict = [String:PromisedReply<ServerMessage>]()
+        private var futuresDict = [String: PromisedReply<ServerMessage>]()
         private let futuresQueue = DispatchQueue(label: "co.tinode.futuresmap")
         private var timer: Timer?
         init() {
@@ -198,7 +200,7 @@ public class Tinode {
 
     // A simple thread-safe wrapper around Dictionary<String, T>.
     private class ConcurrentMap<T> {
-        private var internalMap = [String:T]()
+        private var internalMap = [String: T]()
         private let opsQueue = DispatchQueue(label: "co.tinode.map-ops")
 
         var values: Dictionary<String, T>.Values {
@@ -241,11 +243,11 @@ public class Tinode {
             queue.sync { return self.listeners }
         }
 
-        func onConnect(code: Int, reason: String, params: [String : JSONValue]?) {
+        func onConnect(code: Int, reason: String, params: [String: JSONValue]?) {
             listenersThreadSafe.forEach { $0.onConnect(code: code, reason: reason, params: params) }
         }
 
-        func onDisconnect(byServer: Bool, code: Int, reason: String) {
+        func onDisconnect(byServer: Bool, code: URLSessionWebSocketTask.CloseCode, reason: String) {
             listenersThreadSafe.forEach { $0.onDisconnect(byServer: byServer, code: code, reason: reason) }
         }
 
@@ -290,8 +292,8 @@ public class Tinode {
     private var futures = ConcurrentFuturesMap()
     public var serverVersion: String?
     public var serverBuild: String?
-    private var serverLimits: [String:Int64]?
-    private var connectionListener: TinodeConnectionListener? = nil
+    private var serverLimits: [String: Int64]?
+    private var connectionListener: TinodeConnectionListener?
     public var timeAdjustment: TimeInterval = 0
     public var isConnectionAuthenticated = false
     public var myUid: String?
@@ -299,10 +301,10 @@ public class Tinode {
     public var authToken: String?
     public var authTokenExpires: Date?
     public var nameCounter = 0
-    public var store: Storage? = nil
+    public var store: Storage?
     private var listenerNotifier = ListenerNotifier()
     public var topicsLoaded = false
-    private(set) public var topicsUpdated: Date? = nil
+    private(set) public var topicsUpdated: Date?
 
     struct LoginCredentials {
         let scheme: String
@@ -312,7 +314,7 @@ public class Tinode {
             self.secret = secret
         }
     }
-    private var loginCredentials: LoginCredentials? = nil
+    private var loginCredentials: LoginCredentials?
     private var autoLogin: Bool = false
     private var loginInProgress: Bool = false
     // Queue to execute state-mutating operations on.
@@ -366,7 +368,7 @@ public class Tinode {
         self.deviceToken = self.store?.deviceToken
         self.useTLS = false
         self.hostName = ""
-        //self.osVersoin
+        // self.osVersoin
 
         // osVersion
         // eventListener
@@ -394,6 +396,14 @@ public class Tinode {
                 topics[t.name] = t
                 if let updated = t.updated, topicsUpdated ?? Date.distantPast < updated {
                     topicsUpdated = updated
+                }
+            }
+            if let messages = s.getLatestMessagePreviews() {
+                for m in messages {
+                    if let topic = m.topic, let tt = topics[topic] {
+                        tt.latestMessage = m
+                        topics[topic] = tt
+                    }
                 }
             }
             topicsLoaded = true
@@ -559,7 +569,7 @@ public class Tinode {
     public func noteKeyPress(topic: String) {
         note(topic: topic, what: Tinode.kNoteKp, seq: 0)
     }
-    private func send<DP: Codable, DR: Codable>(payload msg: ClientMessage<DP,DR>) throws {
+    private func send<DP: Codable, DR: Codable>(payload msg: ClientMessage<DP, DR>) throws {
         guard let conn = connection else {
             throw TinodeError.notConnected("Attempted to send msg to a closed connection.")
         }
@@ -568,7 +578,7 @@ public class Tinode {
         conn.send(payload: jsonData)
     }
 
-    private func sendWithPromise<DP: Codable, DR: Codable>(payload msg: ClientMessage<DP,DR>, with id: String) -> PromisedReply<ServerMessage> {
+    private func sendWithPromise<DP: Codable, DR: Codable>(payload msg: ClientMessage<DP, DR>, with id: String) -> PromisedReply<ServerMessage> {
         let future = PromisedReply<ServerMessage>()
         do {
             try send(payload: msg)
@@ -638,7 +648,7 @@ public class Tinode {
             let r = FndTopic<SP>(tinode: self)
             return r
         }
-        return ComTopic<SP>(tinode: self, sub: sub as! Subscription<SP, PrivateType>)
+        return ComTopic(tinode: self, sub: sub as! Subscription<TheCard, PrivateType>)
     }
     public static func newTopic(withTinode tinode: Tinode?, forTopic name: String) -> TopicProto {
         if name == Tinode.kTopicMe {
@@ -663,7 +673,7 @@ public class Tinode {
         } else if meta.topic == Tinode.kTopicFnd {
             topic = DefaultFndTopic(tinode: self)
         } else {
-            topic = DefaultComTopic(tinode: self, name: meta.topic!, desc: meta.desc! as! DefaultDescription)
+            topic = DefaultComTopic(tinode: self, name: meta.topic!, desc: (meta.desc! as! DefaultDescription))
         }
 
         return topic
@@ -699,7 +709,7 @@ public class Tinode {
             case kTopicFnd:
                 r = .fnd
             default:
-                if name.starts(with: kTopicGrpPrefix) || name.starts(with: kTopicNew) {
+                if name.starts(with: kTopicGrpPrefix) || name.starts(with: kTopicNew) || name.starts(with: kTopicChnPrefix) || name.starts(with: kChannelNew) {
                     r = .grp
                 } else if name.starts(with: kTopicUsrPrefix) {
                     r = .p2p
@@ -720,26 +730,14 @@ public class Tinode {
     ///   - desc: account parameters, such as full name etc.
     ///   - creds:  account credential, such as email or phone
     /// - Returns: PromisedReply of the reply ctrl message
-    public func createAccountBasic<Pu: Codable, Pr: Codable>(
-        uname: String,
-        pwd: String,
-        login: Bool,
-        tags: [String]?,
-        desc: MetaSetDesc<Pu, Pr>,
-        creds: [Credential]?) -> PromisedReply<ServerMessage> {
+    public func createAccountBasic<Pu: Codable, Pr: Codable>(uname: String, pwd: String, login: Bool, tags: [String]?, desc: MetaSetDesc<Pu, Pr>, creds: [Credential]?) -> PromisedReply<ServerMessage> {
         let encodedSecret: String
         do {
             encodedSecret = try AuthScheme.encodeBasicToken(uname: uname, password: pwd)
         } catch {
             return PromisedReply(error: TinodeError.invalidArgument(error.localizedDescription))
         }
-        return account(uid: Tinode.kUserNew,
-            scheme: AuthScheme.kLoginBasic,
-            secret: encodedSecret,
-            loginNow: login,
-            tags: tags,
-            desc: desc,
-            creds: creds)
+        return account(uid: Tinode.kUserNew, scheme: AuthScheme.kLoginBasic, secret: encodedSecret, loginNow: login, tags: tags, desc: desc, creds: creds)
     }
 
     private func handleAuthenticationError(error: Error) {
@@ -768,14 +766,7 @@ public class Tinode {
     ///   - desc: default access parameters for this account
     ///   - creds: creds
     /// - Returns: PromisedReply of the reply ctrl message
-    public func account<Pu: Codable, Pr: Codable>(
-        uid: String?,
-        scheme: String,
-        secret: String,
-        loginNow: Bool,
-        tags: [String]?,
-        desc: MetaSetDesc<Pu, Pr>?,
-        creds: [Credential]?) -> PromisedReply<ServerMessage> {
+    public func account<Pu: Codable, Pr: Codable>(uid: String?, scheme: String, secret: String, loginNow: Bool, tags: [String]?, desc: MetaSetDesc<Pu, Pr>?, creds: [Credential]?) -> PromisedReply<ServerMessage> {
         let msgId = getNextMsgId()
         let msga = MsgClientAcc(id: msgId, uid: uid, scheme: scheme, secret: secret, doLogin: loginNow, desc: desc)
 
@@ -791,7 +782,11 @@ public class Tinode {
             }
         }
 
-        let msg = ClientMessage<Pu,Pr>(acc: msga)
+        let msg = ClientMessage<Pu, Pr>(acc: msga)
+        if let attachments = desc?.attachments, !attachments.isEmpty {
+            msg.extra = MsgClientExtra(attachments: attachments)
+        }
+
         let future = sendWithPromise(payload: msg, with: msgId)
 
         if !loginNow {
@@ -807,6 +802,7 @@ public class Tinode {
                 return PromisedReply<ServerMessage>(error: err)
             })
     }
+
     private func setAutoLogin(using scheme: String?,
                               authenticateWith secret: String?) {
         guard let scheme = scheme, let secret = secret else {
@@ -817,9 +813,11 @@ public class Tinode {
         autoLogin = true
         loginCredentials = LoginCredentials(using: scheme, authenticateWith: secret)
     }
+
     public func setAutoLoginWithToken(token: String) {
         setAutoLogin(using: AuthScheme.kLoginToken, authenticateWith: token)
     }
+
     public func loginBasic(uname: String, password: String) -> PromisedReply<ServerMessage> {
         var encodedToken: String
         do {
@@ -935,7 +933,7 @@ public class Tinode {
             self.store?.logout()
         }
     }
-    private func handleDisconnect(isServerOriginated: Bool, code: Int, reason: String) {
+    private func handleDisconnect(isServerOriginated: Bool, code: URLSessionWebSocketTask.CloseCode, reason: String) {
         let e = TinodeError.notConnected("no longer connected to server")
         futures.rejectAndPurgeAll(withError: e)
         serverBuild = nil
@@ -946,15 +944,15 @@ public class Tinode {
         }
         listenerNotifier.onDisconnect(byServer: isServerOriginated, code: code, reason: reason)
     }
-    public class TinodeConnectionListener : ConnectionListener {
+    public class TinodeConnectionListener: ConnectionListener {
         var tinode: Tinode
-        var completionPromises : [PromisedReply<ServerMessage>] = []
+        var completionPromises: [PromisedReply<ServerMessage>] = []
         var promiseQueue = DispatchQueue(label: "co.tinode.completion-promises")
 
         init(tinode: Tinode) {
             self.tinode = tinode
         }
-        func onConnect(reconnecting: Bool, param: Any?) -> Void {
+        func onConnect(reconnecting: Bool, param: Any?) {
             let m = reconnecting ? "YES" : "NO"
             Tinode.log.info("Tinode connected: after reconnect - %@", m.description)
             let doLogin = tinode.autoLogin && tinode.loginCredentials != nil
@@ -998,7 +996,7 @@ public class Tinode {
                 return PromisedReply<ServerMessage>(error: err)
             })
         }
-        func onMessage(with message: String) -> Void {
+        func onMessage(with message: String) {
             Log.default.debug("in: %@", message)
             do {
                 try tinode.dispatch(message)
@@ -1006,14 +1004,14 @@ public class Tinode {
                 Log.default.error("onMessage error: %@", error.localizedDescription)
             }
         }
-        func onDisconnect(isServerOriginated: Bool, code: Int, reason: String) -> Void {
+        func onDisconnect(isServerOriginated: Bool, code: URLSessionWebSocketTask.CloseCode, reason: String) {
             let serverOriginatedString = isServerOriginated ? "YES" : "NO"
             Log.default.info("Tinode disconnected: server originated [%@]; code [%d]; reason [%@]",
-                             serverOriginatedString, code, reason)
+                             serverOriginatedString, code.rawValue, reason)
             tinode.handleDisconnect(isServerOriginated: isServerOriginated, code: code, reason: reason)
         }
-        func onError(error: Error) -> Void {
-            tinode.handleDisconnect(isServerOriginated: true, code: 0, reason: error.localizedDescription)
+        func onError(error: Error) {
+            tinode.handleDisconnect(isServerOriginated: true, code: .invalid, reason: error.localizedDescription)
             Log.default.error("Tinode network error: %@", error.localizedDescription)
             try? rejectAllPromises(err: error)
         }
@@ -1145,7 +1143,7 @@ public class Tinode {
             let msgId = getNextMsgId()
             let msg = ClientMessage<Int, Int>(hi: MsgClientHi(id: msgId, dev: token))
             return sendWithPromise(payload: msg, with: msgId)
-                .thenCatch { [weak self] err in
+                .thenCatch { [weak self] _ in
                     // Clear cached value on failure to allow for retries.
                     self?.deviceToken = nil
                     self?.store?.deviceToken = nil
@@ -1162,6 +1160,9 @@ public class Tinode {
                 topic: topicName,
                 set: set,
                 get: get))
+        if let attachments = set?.desc?.attachments, !attachments.isEmpty {
+            msg.extra = MsgClientExtra(attachments: attachments)
+        }
         return sendWithPromise(payload: msg, with: msgId)
     }
 
@@ -1180,6 +1181,9 @@ public class Tinode {
         let msg = ClientMessage(
             set: MsgClientSet(id: msgId, topic: topic, meta: meta)
         )
+        if let attachments = meta?.desc?.attachments, !attachments.isEmpty {
+            msg.extra = MsgClientExtra(attachments: attachments)
+        }
         return sendWithPromise(payload: msg, with: msgId)
     }
 
@@ -1190,27 +1194,19 @@ public class Tinode {
         return sendWithPromise(payload: msg, with: msgId)
     }
 
-    public static func draftyHeaders(for message: Drafty) -> [String: JSONValue]? {
-        guard !message.isPlain else { return nil }
-        var head: [String: JSONValue] = [:]
-        head["mime"] = JSONValue.string(Drafty.kMimeType)
-        if let refs = message.getEntReferences() {
-            head["attachments"] = JSONValue.array(refs.map { JSONValue.string($0) })
-        }
-        return head
-    }
-
-    public func publish(topic: String, head: [String:JSONValue]?, content: Drafty) -> PromisedReply<ServerMessage> {
+    public func publish(topic: String, head: [String: JSONValue]?, content: Drafty, attachments: [String]?) -> PromisedReply<ServerMessage> {
         let msgId = getNextMsgId()
-        let msg = ClientMessage<Int, Int>(
-            pub: MsgClientPub(id: msgId, topic: topic, noecho: true, head: head, content: content))
+        let msg = ClientMessage<Int, Int>(pub: MsgClientPub(id: msgId, topic: topic, noecho: true, head: head, content: content))
+        if let attachments = attachments, !attachments.isEmpty {
+            msg.extra = MsgClientExtra(attachments: attachments)
+        }
         return sendWithPromise(payload: msg, with: msgId)
     }
 
-    public func getTopics() -> Array<TopicProto>? {
+    public func getTopics() -> [TopicProto]? {
         return Array(topics.values)
     }
-    public func getFilteredTopics(filter: ((TopicProto) -> Bool)?) -> Array<TopicProto>? {
+    public func getFilteredTopics(filter: ((TopicProto) -> Bool)?) -> [TopicProto]? {
         guard let filter = filter else {
             return topics.values.compactMap { $0 }
         }
@@ -1279,7 +1275,7 @@ public class Tinode {
     public func delCurrentUser(hard: Bool) -> PromisedReply<ServerMessage> {
         let msgId = getNextMsgId()
         let msg = ClientMessage<Int, Int>(del: MsgClientDel(id: msgId, hard: hard))
-        return sendWithPromise(payload: msg, with: msgId).thenApply{ [weak self] _ in
+        return sendWithPromise(payload: msg, with: msgId).thenApply { [weak self] _ in
             guard let this = self else { return nil }
             this.disconnect()
             this.store?.deleteAccount(this.myUid!)
@@ -1319,7 +1315,7 @@ public class Tinode {
     }
 
     public static func isNull(obj: Any?) -> Bool {
-        guard let obj = obj as? String else { return false }
-        return obj == Tinode.kNullValue
+        guard let str = obj as? String else { return false }
+        return str == Tinode.kNullValue
     }
 }

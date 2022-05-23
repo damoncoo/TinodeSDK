@@ -53,7 +53,7 @@ public class MsgServerCtrl: Decodable {
         return val.asInt64()
     }
 
-    public func getStringDict(for key: String) -> [String:String]? {
+    public func getStringDict(for key: String) -> [String: String]? {
         if case .dict(let  v)? = params?[key] {
             return v.mapValues { (value) -> String? in
                 if case .string(let s) = value {
@@ -81,11 +81,11 @@ public class MsgServerMeta: Decodable {
     public let tags: [String]?
     public let cred: [Credential]?
 
-    private enum CodingKeys: String, CodingKey  {
+    private enum CodingKeys: String, CodingKey {
         case id, topic, ts, desc, sub, del, tags, cred
     }
     required public init (from decoder: Decoder) throws {
-        let container =  try decoder.container (keyedBy: CodingKeys.self)
+        let container =  try decoder.container(keyedBy: CodingKeys.self)
         id = try? container.decode(String.self, forKey: .id)
         topic = try? container.decode(String.self, forKey: .topic)
         ts = try? container.decode(Date.self, forKey: .ts)
@@ -105,10 +105,10 @@ public class MsgServerMeta: Decodable {
     }
 }
 
-open class MsgServerData : Decodable {
+open class MsgServerData: Decodable {
     public var id: String?
     public var topic: String?
-    public var head: [String:JSONValue]?
+    public var head: [String: JSONValue]?
     public var from: String?
     public var ts: Date?
     public var seq: Int?
@@ -118,12 +118,16 @@ open class MsgServerData : Decodable {
     public init() {}
 }
 
-public class AccessChange : Decodable {
+public class AccessChange: Decodable {
     let want: String?
     let given: String?
+
+    public var description: String {
+        return "{want = " + (want ?? "nil") + ", given = " + (given ?? "nil") + "}"
+    }
 }
 
-public class MsgServerPres : Decodable {
+public class MsgServerPres: Decodable {
     enum What {
         case kOn, kOff, kUpd, kGone, kTerm, kAcs, kMsg, kUa, kRecv, kRead, kDel, kTags, kUnknown
     }
@@ -175,20 +179,24 @@ public class MsgServerPres : Decodable {
 
 public class MsgServerInfo: Decodable {
     public var topic: String?
+    public var src: String?
     public var from: String?
     public var what: String?
     public var seq: Int?
 }
 
 public class ServerMessage: Decodable {
-    public static let kStatusOk                  = 200 // RFC 7231, 6.3.1
-    public static let kStatusResetContent        = 205 // RFC 7231, 6.3.6
-    public static let kStatusMultipleChoices     = 300 // RFC 7231, 6.4.1
-    public static let kStatusBadRequest          = 400 // RFC 7231, 6.5.1
-    public static let kStatusUnauthorized        = 401 // RFC 7235, 3.1
-    public static let kStatusInternalServerError = 500 // RFC 7231, 6.6.1
-    public static let kStatusServiceUnavailable  = 503 // RFC 7231, 6.6.4
-    public static let kStatusGatewayTimeout      = 504 // RFC 7231, 6.6.5
+    // RFC 7231 HTTP status messages
+    // https://tools.ietf.org/html/rfc7231#section-6
+    public static let kStatusOk                  = 200 // 6.3.1
+    public static let kStatusResetContent        = 205 // 6.3.6
+    public static let kStatusMultipleChoices     = 300 // 6.4.1
+    public static let kStatusSeeOther            = 303 // 6.4.4
+    public static let kStatusBadRequest          = 400 // 6.5.1
+    public static let kStatusUnauthorized        = 401 // 3.1
+    public static let kStatusInternalServerError = 500 // 6.6.1
+    public static let kStatusServiceUnavailable  = 503 // 6.6.4
+    public static let kStatusGatewayTimeout      = 504 // 6.6.5
 
     public var ctrl: MsgServerCtrl?
     public var meta: MsgServerMeta?

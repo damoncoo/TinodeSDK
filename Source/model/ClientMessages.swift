@@ -2,12 +2,12 @@
 //  ClientMessages.swift
 //  ios
 //
-//  Copyright © 2019 Tinode. All rights reserved.
+//  Copyright © 2019-2022 Tinode LLC. All rights reserved.
 //
 
 import Foundation
 
-public class MsgClientHi : Encodable {
+public class MsgClientHi: Encodable {
     let id: String?
     let ver: String?
     // User Agent.
@@ -34,22 +34,22 @@ public class Credential: Codable, Comparable, CustomStringConvertible {
     public static let kMethEmail = "email"
     public static let kMethPhone = "tel"
     // Confirmation method: email, phone, captcha.
-    public var meth: String? = nil
+    public var meth: String?
     // Credential to be confirmed, e.g. email or a phone number.
-    public var val: String? = nil
+    public var val: String?
     // Confirmation response, such as '123456'.
-    var resp: String? = nil
+    var resp: String?
     // Confirmation parameters.
-    var params: [String:String]? = nil
+    var params: [String: String]?
     // If credential is confirmed
-    var done: Bool? = nil
+    var done: Bool?
 
     public init(meth: String, val: String) {
         self.meth = meth
         self.val = val
     }
 
-    public init(meth: String?, val: String?, resp: String?, params: [String:String]?) {
+    public init(meth: String?, val: String?, resp: String?, params: [String: String]?) {
         self.meth = meth
         self.val = val
         self.resp = resp
@@ -73,7 +73,7 @@ public class Credential: Codable, Comparable, CustomStringConvertible {
     }
 }
 
-public class MsgClientAcc<Pu: Encodable,Pr: Encodable>: Encodable {
+public class MsgClientAcc<Pu: Encodable, Pr: Encodable>: Encodable {
     var id: String?
     var user: String?
     var scheme: String?
@@ -81,14 +81,14 @@ public class MsgClientAcc<Pu: Encodable,Pr: Encodable>: Encodable {
     var login: Bool?
     var tags: [String]?
     var cred: [Credential]?
-    var desc: MetaSetDesc<Pu,Pr>?
+    var desc: MetaSetDesc<Pu, Pr>?
 
     init(id: String?,
          uid: String?,
          scheme: String?,
          secret: String?,
          doLogin: Bool,
-         desc: MetaSetDesc<Pu,Pr>?) {
+         desc: MetaSetDesc<Pu, Pr>?) {
         self.id = id
         self.user = uid
         self.scheme = scheme
@@ -178,10 +178,10 @@ public class MsgGetMeta: CustomStringConvertible, Encodable {
     private var set = 0
 
     public var what: String = ""
-    public var desc: MetaGetDesc? = nil
-    public var sub: MetaGetSub? = nil
-    public var data: MetaGetData? = nil
-    public var del: MetaGetData? = nil
+    public var desc: MetaGetDesc?
+    public var sub: MetaGetSub?
+    public var data: MetaGetData?
+    public var del: MetaGetData?
 
     // Only use these fields in JSON representation.
     private enum CodingKeys: String, CodingKey {
@@ -193,18 +193,18 @@ public class MsgGetMeta: CustomStringConvertible, Encodable {
     }
 
     public var description: String {
-        //return
-        let desc_str = desc != nil ? String(describing: desc!) : "null"
-        let sub_str = sub != nil ? String(describing: sub!) : "null"
-        let data_str = data != nil ? String(describing: data!) : "null"
-        let del_str = del != nil ? String(describing: del!) : "null"
+        // return
+        let desc_str = desc != nil ? String(describing: desc!) : "nil"
+        let sub_str = sub != nil ? String(describing: sub!) : "nil"
+        let data_str = data != nil ? String(describing: data!) : "nil"
+        let del_str = del != nil ? String(describing: del!) : "nil"
         return "[\(self.what)]" +
             " desc=[\(desc_str)]," +
             " sub=[\(sub_str)]," +
             " data=[\(data_str)]," +
             " del=[\(del_str)]" +
-            " tags=[\((set & MsgGetMeta.kTagsSet) != 0 ? "set" : "null")]" +
-            " cred=[\((set & MsgGetMeta.kCredSet) != 0 ? "set" : "null")]"
+            " tags=[\((set & MsgGetMeta.kTagsSet) != 0 ? "set" : "nil")]" +
+            " cred=[\((set & MsgGetMeta.kCredSet) != 0 ? "set" : "nil")]"
     }
 
     init() {
@@ -294,11 +294,16 @@ public class MsgGetMeta: CustomStringConvertible, Encodable {
 }
 
 public class MetaSetDesc<P: Encodable, R: Encodable>: Encodable {
-    var defacs: Defacs? = nil
-    var pub: P? = nil
-    var priv: R? = nil
-    private enum CodingKeys : String, CodingKey {
-        case defacs, pub = "public", priv = "private"
+    var defacs: Defacs?
+    var pub: P?
+    var priv: R?
+    var trusted: TrustedType?
+
+    // Not serialized
+    public var attachments: [String]?
+
+    private enum CodingKeys: String, CodingKey {
+        case defacs, pub = "public", priv = "private", trusted
     }
     public init(da: Defacs) {
         self.defacs = da
@@ -306,6 +311,7 @@ public class MetaSetDesc<P: Encodable, R: Encodable>: Encodable {
     public init(pub: P?, priv: R?) {
         self.pub = pub
         self.priv = priv
+        self.trusted = nil
     }
     public init(auth: String, anon: String) {
         self.defacs = Defacs(auth: auth, anon: anon)
@@ -420,10 +426,10 @@ public class MsgClientPub: Encodable {
     let id: String?
     let topic: String?
     let noecho: Bool?
-    let head: [String:JSONValue]?
+    let head: [String: JSONValue]?
     let content: Drafty?
 
-    init(id: String?, topic: String?, noecho: Bool?, head: [String:JSONValue]?, content: Drafty?) {
+    init(id: String?, topic: String?, noecho: Bool?, head: [String: JSONValue]?, content: Drafty?) {
         self.id = id
         self.topic = topic
         self.noecho = noecho
@@ -436,6 +442,7 @@ public class MsgClientDel: Encodable {
     static let kStrTopic = "topic"
     static let kStrMsg = "msg"
     static let kStrSub = "sub"
+    static let kStrUser = "user"
     static let kStrCred = "cred"
     let id: String?
     let topic: String?
@@ -452,7 +459,7 @@ public class MsgClientDel: Encodable {
         // nil value will cause the field to be skipped
         // during serialization instead of sending 0/null/[].
         self.delseq = what == MsgClientDel.kStrMsg ? ranges : nil
-        self.user = what == MsgClientDel.kStrSub ? user : nil
+        self.user = what == MsgClientDel.kStrSub || what == MsgClientDel.kStrUser ? user : nil
         self.hard = (hard ?? false) ? true : nil
         self.cred = cred
     }
@@ -485,7 +492,7 @@ public class MsgClientDel: Encodable {
 
     /// Delete current user.
     convenience init(id: String?, hard: Bool) {
-        self.init(id: id, topic: nil, what: MsgClientDel.kStrTopic,
+        self.init(id: id, topic: nil, what: MsgClientDel.kStrUser,
                   ranges: nil, user: nil, cred: nil, hard: hard)
     }
 
@@ -503,9 +510,17 @@ public class MsgClientDel: Encodable {
 
 }
 
-public class ClientMessage<Pu: Encodable, Pr: Encodable> : Encodable {
+public class MsgClientExtra: Encodable {
+    let attachments: [String]?
+
+    init(attachments: [String]?) {
+        self.attachments = attachments
+    }
+}
+
+public class ClientMessage<Pu: Encodable, Pr: Encodable>: Encodable {
     var hi: MsgClientHi?
-    var acc: MsgClientAcc<Pu,Pr>?
+    var acc: MsgClientAcc<Pu, Pr>?
     var login: MsgClientLogin?
     var sub: MsgClientSub<Pu, Pr>?
     var get: MsgClientGet?
@@ -515,10 +530,13 @@ public class ClientMessage<Pu: Encodable, Pr: Encodable> : Encodable {
     var pub: MsgClientPub?
     var del: MsgClientDel?
 
+    // Optional field for sending attachment references.
+    var extra: MsgClientExtra?
+
     init(hi: MsgClientHi) {
         self.hi = hi
     }
-    init(acc: MsgClientAcc<Pu,Pr>) {
+    init(acc: MsgClientAcc<Pu, Pr>) {
         self.acc = acc
     }
     init(login: MsgClientLogin) {
