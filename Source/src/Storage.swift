@@ -32,6 +32,9 @@ public protocol Message {
     // Textual topic name.
     var topic: String? { get }
 
+    // Seq id (if any) this message is intended to replace.
+    var replacesSeq: Int? { get }
+
     var isDraft: Bool { get }
     var isReady: Bool { get }
     var isDeleted: Bool { get }
@@ -39,6 +42,7 @@ public protocol Message {
     var isSynced: Bool { get }
     var isPending: Bool { get }
     var isForwarded: Bool { get }
+    var isEdited: Bool { get }
 }
 
 extension Message {
@@ -84,14 +88,8 @@ public protocol Storage: AnyObject {
     func topicUpdate(topic: TopicProto) -> Bool
     // Delete topic.
     @discardableResult
-    func topicDelete(topic: TopicProto) -> Bool
+    func topicDelete(topic: TopicProto, hard: Bool) -> Bool
 
-    // Get seq IDs of the stored messages as a Range.
-    func getCachedMessagesRange(topic: TopicProto) -> MsgRange?
-    // Get the maximum seq ID range of the messages missing in cache,
-    // inclusive-exclusive [low, hi).
-    // Returns null if all messages are present or no messages are found.
-    func getNextMissingRange(topic: TopicProto) -> MsgRange?
     // Local user reported messages as read.
     @discardableResult
     func setRead(topic: TopicProto, read: Int) -> Bool
@@ -167,6 +165,7 @@ public protocol Storage: AnyObject {
     ///   - dbMessageId: database ID of the message.
     ///   - data: updated content of the message. If null only status is updated.
     /// - Returns `true` on success, `false` otherwise.
+    @discardableResult
     func msgReady(topic: TopicProto, dbMessageId: Int64, data: Drafty) -> Bool
 
     /// Mark message as being sent to the server.
@@ -201,7 +200,17 @@ public protocol Storage: AnyObject {
     ///     - dbMessageId: database ID of the message.
     /// - Returns:
     ///     `true` on success, `false` otherwise
+    @discardableResult
     func msgDiscard(topic: TopicProto, dbMessageId: Int64) -> Bool
+
+    /// Deletes a message by topic & seq.
+    /// - Parameters:
+    ///     - topic: topic which owns the message
+    ///     - seqId: message sequence id
+    /// - Returns:
+    ///     `true` on success, `false` otherwise
+    @discardableResult
+    func msgDiscard(topic: TopicProto, seqId: Int) -> Bool
 
     /// Mark message as delivered to the server and assign a real seq ID.
     /// - Parameters:
@@ -210,6 +219,7 @@ public protocol Storage: AnyObject {
     ///   - timestamp: server timestamp.
     ///   - seq: server-issued message seqId.
     /// - Returns `true` on success, `false` otherwise.
+    @discardableResult
     func msgDelivered(topic: TopicProto, dbMessageId: Int64, timestamp: Date, seq: Int) -> Bool
 
     // Mark messages for deletion by range.
@@ -217,6 +227,7 @@ public protocol Storage: AnyObject {
     func msgMarkToDelete(topic: TopicProto, from idLo: Int, to idHi: Int, markAsHard: Bool) -> Bool
 
     // Mark messages for deletion by seq ID list.
+    @discardableResult
     func msgMarkToDelete(topic: TopicProto, ranges: [MsgRange]?, markAsHard: Bool) -> Bool
 
     // Delete messages.
@@ -235,6 +246,14 @@ public protocol Storage: AnyObject {
     @discardableResult
     func msgReadByRemote(sub: SubscriptionProto, read: Int?) -> Bool
 
+    // Get seq IDs of the stored messages as a Range.
+    func getCachedMessagesRange(topic: TopicProto) -> MsgRange?
+
+    // Get the maximum seq ID range of the messages missing in cache,
+    // inclusive-exclusive [low, hi).
+    // Returns null if all messages are present or no messages are found.
+    func getNextMissingRange(topic: TopicProto) -> MsgRange?
+
     // Retrieves a single message by database id.
     func getMessageById(dbMessageId: Int64) -> Message?
 
@@ -244,11 +263,35 @@ public protocol Storage: AnyObject {
     // Returns a list of unsent messages.
     func getQueuedMessages(topic: TopicProto) -> [Message]?
 
-    // Returns a list of pending delete message seq ids.
-    // topic: topic where the messages were deleted.
-    // hard: when true, fetch hard-deleted messages, soft-deleted otherwise.
+    /// Get the list of pending delete message seq ids.
+    /// - Parameters:
+    ///   - topic: topic where the messages were deleted.
+    ///   - hard: when `true`, fetch hard-deleted messages, soft-deleted otherwise.
     func getQueuedMessageDeletes(topic: TopicProto, hard: Bool) -> [MsgRange]?
 
-    // Returns the latest message in each topic.
+    /// Returns the latest message in each topic.
     func getLatestMessagePreviews() -> [Message]?
+
+    /// Read message page of the size `limit` starting with the messages seq ID `from` (exclusive).
+    /// - Parameters:
+    ///   - topic: topic which owns the messages.
+    ///   - from: the ancor message seq ID to start reading from (exclusive).
+    ///   - limit: maximum number of messages to read.
+    ///   - desc: `true` to read messages in descending order, `false` to read in ascending.
+    func getMessagePage(topic: TopicProto, from: Int, limit: Int, forward: Bool) -> [Message]?
+
+    /// Retrieve a single message by topic and seq ID.
+    /// - Parameters:
+    ///   - topic: topic which owns the messages.
+    ///   - seqId: effective seq ID of the message.
+    func getMessage(fromTopic topic: TopicProto, byEffectiveSeqId seqId: Int) -> Message?
+
+    /// Get seq IDs of up to limit versions of the edited message with the given ID.
+    /// - Parameters:
+    ///   - topic topic which sent the message.
+    ///   - seq ID of the edited message to get versions of.
+    ///   - limit the count of latest versions to get or all if limit is zero.
+    /// - Returns:
+    ///   Array of seq ID of edits ordered from newest to oldest.
+    func getAllMsgVersions(fromTopic topic: TopicProto, forSeq seqId: Int, limit: Int?) -> [Int]?
 }

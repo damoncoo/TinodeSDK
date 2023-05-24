@@ -91,14 +91,32 @@ public enum JSONValue: Codable, Equatable {
     }
 
     public func asData() -> Data? {
-        if case let .bytes(v) = self {
+        switch self {
+        case .bytes(let val):
+            return val
+        case .string(let val):
+            return Data(base64Encoded: val)
+        default:
+            return nil
+        }
+    }
+
+    public func asBool() -> Bool? {
+        if case let .bool(v) = self {
             return v
         }
         return nil
     }
 
-    public func asBool() -> Bool? {
-        if case let .bool(v) = self {
+    public func asArray() -> [JSONValue]? {
+        if case let .array(v) = self {
+            return v
+        }
+        return nil
+    }
+
+    public func asDict() -> [String: JSONValue]? {
+        if case let .dict(v) = self {
             return v
         }
         return nil

@@ -108,6 +108,19 @@ public protocol TinodeEventListener: AnyObject {
     func onPresMessage(pres: MsgServerPres?)
 }
 
+public extension TinodeEventListener {
+    func onConnect(code: Int, reason: String, params: [String: JSONValue]?) {}
+    func onDisconnect(byServer: Bool, code: URLSessionWebSocketTask.CloseCode, reason: String) {}
+    func onLogin(code: Int, text: String) {}
+    func onMessage(msg: ServerMessage?) {}
+    func onRawMessage(msg: String) {}
+    func onCtrlMessage(ctrl: MsgServerCtrl?) {}
+    func onDataMessage(data: MsgServerData?) {}
+    func onInfoMessage(info: MsgServerInfo?) {}
+    func onMetaMessage(meta: MsgServerMeta?) {}
+    func onPresMessage(pres: MsgServerPres?) {}
+}
+
 public class Tinode {
     public static let kTopicNew = "new"
     public static let kUserNew = "new"
@@ -135,7 +148,7 @@ public class Tinode {
     internal static let log = Log(subsystem: "co.tinode.tinodesdk")
 
     let kProtocolVersion = "0"
-    let kVersion = "0.18"
+    let kVersion = "0.22"
     let kLibVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String
     let kLocale = Locale.current.languageCode!
     public var OsVersion: String = ""
@@ -239,6 +252,10 @@ public class Tinode {
             }
         }
 
+        public func removeAll() {
+            queue.sync { listeners.removeAll() }
+        }
+
         public var listenersThreadSafe: [TinodeEventListener] {
             queue.sync { return self.listeners }
         }
@@ -292,7 +309,7 @@ public class Tinode {
     private var futures = ConcurrentFuturesMap()
     public var serverVersion: String?
     public var serverBuild: String?
-    private var serverLimits: [String: Int64]?
+    private var serverParams: [String: JSONValue]?
     private var connectionListener: TinodeConnectionListener?
     public var timeAdjustment: TimeInterval = 0
     public var isConnectionAuthenticated = false
@@ -346,6 +363,7 @@ public class Tinode {
         let encoder = JSONEncoder()
         encoder.dataEncodingStrategy = .base64
         encoder.dateEncodingStrategy = .customRFC3339
+        encoder.outputFormatting = .withoutEscapingSlashes
         return encoder
     }()
     public static let jsonDecoder: JSONDecoder = {
@@ -385,6 +403,9 @@ public class Tinode {
     }
     public func removeListener(_ l: TinodeEventListener) {
         listenerNotifier.removeListener(l)
+    }
+    public func remoteAllListeners() {
+        listenerNotifier.removeAll()
     }
 
     @discardableResult
@@ -461,7 +482,49 @@ public class Tinode {
     }
 
     public func getServerLimit(for key: String, withDefault defVal: Int64) -> Int64 {
-        return self.serverLimits?[key] ?? defVal
+        return self.serverParams?[key]?.asInt64() ?? defVal
+    }
+
+    public func getServerParam(for key: String) -> JSONValue? {
+        return self.serverParams?[key]
+    }
+
+    public func toAbsoluteURL(origUrl: String) -> URL? {
+        return URL(string: origUrl, relativeTo: baseURL(useWebsocketProtocol: false)) ?? URL(string: origUrl)
+    }
+
+    public func isTrustedURL(_ url: URL) -> Bool {
+        let base = baseURL(useWebsocketProtocol: false)!
+        return url.scheme == base.scheme && url.host == base.host && url.port == base.port
+    }
+
+    public func addAuthQueryParams(_ url: URL) -> URL {
+        if isTrustedURL(url) {
+            let items = [
+                URLQueryItem(name: "apikey", value: apiKey),
+                URLQueryItem(name: "auth", value: "token"),
+                // Convert standard encoded token to URL encoding to be safely included into an URL.
+                URLQueryItem(name: "secret", value: authToken?
+                    .replacingOccurrences(of: "+", with: "-")
+                    .replacingOccurrences(of: "/", with: "_")),
+            ]
+            var components = URLComponents(string: url.absoluteString)
+            var query = components?.queryItems ?? []
+            query.append(contentsOf: items)
+            components?.queryItems = query
+            return components?.url ?? url
+        }
+        return url
+    }
+
+    public func getRequestHeaders() -> [String:String] {
+        var headers: [String:String] = [:]
+        headers["X-Tinode-APIKey"] = apiKey
+        if authToken != nil {
+            headers["X-Tinode-Auth"] = "Token " + authToken!
+        }
+        headers["User-Agent"] = userAgent
+        return headers
     }
 
     private func getNextMsgId() -> String {
@@ -555,20 +618,35 @@ public class Tinode {
             }
         }
     }
+
+    public func oobNotification(payload: [AnyHashable : Any], token: String) {
+
+    }
+
     private func note(topic: String, what: String, seq: Int) {
         let msg = ClientMessage<Int, Int>(
             note: MsgClientNote(topic: topic, what: what, seq: seq))
         try? send(payload: msg)
     }
+
     public func noteRecv(topic: String, seq: Int) {
         note(topic: topic, what: Tinode.kNoteRecv, seq: seq)
     }
+
     public func noteRead(topic: String, seq: Int) {
         note(topic: topic, what: Tinode.kNoteRead, seq: seq)
     }
+
     public func noteKeyPress(topic: String) {
         note(topic: topic, what: Tinode.kNoteKp, seq: 0)
     }
+
+    public func videoCall(topic: String, seq: Int, event: String, payload: JSONValue? = nil) {
+        let msg = ClientMessage<Int, Int>(
+            note: MsgClientNote(topic: topic, what: "call", seq: seq, event: event, payload: payload))
+        try? send(payload: msg)
+    }
+
     private func send<DP: Codable, DR: Codable>(payload msg: ClientMessage<DP, DR>) throws {
         guard let conn = connection else {
             throw TinodeError.notConnected("Attempted to send msg to a closed connection.")
@@ -605,11 +683,9 @@ public class Tinode {
                 if !(ctrl.params?.isEmpty ?? true) {
                     tn.serverVersion = ctrl.getStringParam(for: "ver")
                     tn.serverBuild = ctrl.getStringParam(for: "build")
-                    tn.serverLimits = [:]
+                    tn.serverParams = ctrl.params
                     for k in [Tinode.kMaxMessageSize, Tinode.kMaxSubscriberCount, Tinode.kMaxTagCount, Tinode.kMaxFileUploadSize] {
-                        if let v = ctrl.getInt64Param(for: k) {
-                            tn.serverLimits![k] = v
-                        } else {
+                        if ctrl.getInt64Param(for: k) == nil {
                             Tinode.log.error("Server limit missing for key %@", k)
                         }
                     }
@@ -766,9 +842,9 @@ public class Tinode {
     ///   - desc: default access parameters for this account
     ///   - creds: creds
     /// - Returns: PromisedReply of the reply ctrl message
-    public func account<Pu: Codable, Pr: Codable>(uid: String?, scheme: String, secret: String, loginNow: Bool, tags: [String]?, desc: MetaSetDesc<Pu, Pr>?, creds: [Credential]?) -> PromisedReply<ServerMessage> {
+    public func account<Pu: Codable, Pr: Codable>(uid: String?, tmpscheme: String? = nil, tmpsecret: String? = nil, scheme: String, secret: String, loginNow: Bool, tags: [String]?, desc: MetaSetDesc<Pu, Pr>?, creds: [Credential]?) -> PromisedReply<ServerMessage> {
         let msgId = getNextMsgId()
-        let msga = MsgClientAcc(id: msgId, uid: uid, scheme: scheme, secret: secret, doLogin: loginNow, desc: desc)
+        let msga = MsgClientAcc(id: msgId, uid: uid, tmpscheme: tmpscheme, tmpsecret: tmpsecret, scheme: scheme, secret: secret, doLogin: loginNow, desc: desc)
 
         if let creds = creds, creds.count > 0 {
             for c in creds {
@@ -898,8 +974,10 @@ public class Tinode {
             }
         }
     }
-    private func updateAccountSecret(uid: String?, scheme: String, secret: String) -> PromisedReply<ServerMessage> {
-        return account(uid: uid, scheme: scheme, secret: secret, loginNow: false, tags: nil, desc: nil as MetaSetDesc<Int, Int>?, creds: nil)
+    private func updateAccountSecret(uid: String?,
+                                     tmpscheme: String? = nil, tmpsecret: String? = nil,
+                                     scheme: String, secret: String) -> PromisedReply<ServerMessage> {
+        return account(uid: uid, tmpscheme: tmpscheme, tmpsecret: tmpsecret, scheme: scheme, secret: secret, loginNow: false, tags: nil, desc: nil as MetaSetDesc<Int, Int>?, creds: nil)
     }
     @discardableResult
     public func updateAccountBasic(uid: String?, username: String, password: String) -> PromisedReply<ServerMessage> {
@@ -910,6 +988,17 @@ public class Tinode {
             return PromisedReply(error: error)
         }
     }
+
+    @discardableResult
+    public func updateAccountBasic(usingAuthScheme auth: AuthScheme, username: String, password: String) -> PromisedReply<ServerMessage> {
+        do {
+            return try updateAccountSecret(uid: nil, tmpscheme: auth.scheme, tmpsecret: auth.secret, scheme: AuthScheme.kLoginBasic,
+                secret: AuthScheme.encodeBasicToken(uname: username, password: password))
+        } catch {
+            return PromisedReply(error: error)
+        }
+    }
+
     public func requestResetPassword(method: String, newValue: String) -> PromisedReply<ServerMessage> {
         do {
             return try login(scheme: AuthScheme.kLoginReset, secret: AuthScheme.encodeResetToken(scheme: AuthScheme.kLoginBasic, method: method, value: newValue), creds: nil)
@@ -929,7 +1018,7 @@ public class Tinode {
         setDeviceToken(token: Tinode.kNullValue).thenFinally {
             self.disconnect()
             self.myUid = nil
-            self.serverLimits = nil
+            self.serverParams = nil
             self.store?.logout()
         }
     }

@@ -14,6 +14,7 @@ public protocol TopicProto: AnyObject {
     var name: String { get }
     var updated: Date? { get set }
     var touched: Date? { get set }
+    var deleted: Bool { get set }
     var subsUpdated: Date? { get }
     var topicType: TopicType { get }
     var maxDel: Int { get set }
@@ -55,8 +56,10 @@ public protocol TopicProto: AnyObject {
     func topicLeft(unsub: Bool?, code: Int?, reason: String?)
 
     func updateAccessMode(ac: AccessChange?) -> Bool
-    func persist(_ on: Bool)
+    func persist()
+    func expunge(hard: Bool)
     func setSetAndFetch(newSeq: Int?)
+    func getMessage(byEffectiveSeq seqId: Int) -> Message?
 
     func allMessagesReceived(count: Int?)
     func allSubsReceived()
@@ -89,6 +92,8 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         case alreadySubscribed
         case notSynchronized
         case subscriptionFailure(String)
+        case messageDraftFailure(String)
+        case deleteFailure(String)
     }
 
     enum NoteType {
@@ -146,7 +151,7 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
             }
             return withData(since: nil, before: nil, limit: limit)
         }
-        public func withLaterData(limit: Int?) -> MetaGetBuilder {
+        public func withLaterData(limit: Int? = nil) -> MetaGetBuilder {
             if let r = topic.cachedMessageRange {
                 return withData(since: r.hi != 0 ? r.hi : nil, before: nil, limit: limit)
             }
@@ -224,6 +229,8 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
             }
         }
     }
+
+    public var deleted: Bool = false
 
     public var read: Int? {
         get {
@@ -520,17 +527,18 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         return MetaGetBuilder(parent: self)
     }
 
-    public func persist(_ on: Bool) {
-        if on {
-            if !isPersisted {
-                store?.topicAdd(topic: self)
-               if isP2PType {
-                   tinode?.updateUser(uid: self.name, desc: self.description)
-               }
-            }
-        } else {
-            store?.topicDelete(topic: self)
+    public func persist() {
+        if !isPersisted {
+            store?.topicAdd(topic: self)
+           if isP2PType {
+               tinode?.updateUser(uid: self.name, desc: self.description)
+           }
         }
+    }
+
+    public func expunge(hard: Bool) {
+        deleted = true
+        store?.topicDelete(topic: self, hard: hard)
     }
 
     @discardableResult
@@ -566,9 +574,8 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
             return PromisedReply(error: TopicError.alreadySubscribed)
         }
         let name = self.name
-        if !isPersisted {
-            persist(true)
-        }
+        persist()
+
         let tnd = tinode!
         guard tnd.isConnected else {
             return PromisedReply(error: TinodeError.notConnected("Cannot subscribe to topic. No server connection."))
@@ -588,7 +595,9 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
                     self?.attached = true
                     if let ctrl = msg?.ctrl {
                         if !(ctrl.params?.isEmpty ?? true) {
-                            self?.description.acs = Acs(from: ctrl.getStringDict(for: "acs"))
+                            if let acsStr = ctrl.getStringDict(for: "acs") {
+                                self?.description.acs = Acs(from: acsStr)
+                            }
                             if self?.isNew ?? false {
                                 self?.updated = ctrl.ts
                                 self?.setName(name: ctrl.topic!)
@@ -610,7 +619,7 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
                     case TinodeError.serverResponseError(let code, _, _) = e {
                     if ServerMessage.kStatusBadRequest <= code && code < ServerMessage.kStatusInternalServerError {
                         self?.tinode?.stopTrackingTopic(topicName: name)
-                        self?.persist(false)
+                        self?.expunge(hard: true)
                     }
                 }
                 // To next handler.
@@ -843,12 +852,19 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
     /// Delete topic
     @discardableResult
     public func delete(hard: Bool) -> PromisedReply<ServerMessage> {
+        if deleted {
+            self.topicLeft(unsub: true, code: 200, reason: "OK")
+            self.tinode!.stopTrackingTopic(topicName: self.name)
+            self.expunge(hard: true)
+            return PromisedReply(value: nil)
+        }
+
         // Delete works even if the topic is not attached.
         return tinode!.delTopic(topicName: name, hard: hard).then(
             onSuccess: { msg in
                 self.topicLeft(unsub: true, code: msg?.ctrl?.code, reason: msg?.ctrl?.text)
                 self.tinode!.stopTrackingTopic(topicName: self.name)
-                self.persist(false)
+                self.expunge(hard: true)
                 return nil
             }
         )
@@ -913,6 +929,11 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
     public func noteKeyPress() {
         note(what: .kKeyPress)
     }
+
+    public func videoCall(event: String, seq: Int, payload: JSONValue? = nil) {
+        self.tinode?.videoCall(topic: self.name, seq: seq, event: event, payload: payload)
+    }
+
     private func setSeq(seq: Int) {
         if description.getSeq < seq {
             description.seq = seq
@@ -1111,7 +1132,10 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
                 sub.online = (.kOn == what)
             }
         case .kDel:
-            routeMetaDel(clear: pres.clear!, delseq: pres.delseq!)
+            if let delseq = pres.delseq {
+                // TODO: fetch actual delseq. pres.delseq could be nil if message is forwarded from 'me' topic.
+                routeMetaDel(clear: pres.clear!, delseq: delseq)
+            }
         case .kTerm:
             topicLeft(unsub: false, code: ServerMessage.kStatusInternalServerError, reason: "term")
         case .kAcs:
@@ -1163,7 +1187,7 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
                         s.topicLeft(unsub: unsub, code: msg?.ctrl?.code, reason: msg?.ctrl?.text)
                         if unsub ?? false {
                             s.tinode?.stopTrackingTopic(topicName: s.name)
-                            s.persist(false)
+                            s.expunge(hard: true)
                         }
                         return nil
                     })
@@ -1207,15 +1231,16 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
     private func publishInternal(content: Drafty, head: [String: JSONValue]?, msgId: Int64) -> PromisedReply<ServerMessage> {
         var headers = head
         var attachments: [String]?
-        if content.isPlain {
-            // Plain text content should not have "mime" header. Clear it.
-            headers?.removeValue(forKey: "mime")
-        } else {
+        if !content.isPlain {
             if headers == nil {
                 headers = [:]
             }
+            // Set "x-drafty" mime header (except video call messages).
             headers!["mime"] = .string(Drafty.kMimeType)
             attachments = content.entReferences
+        } else {
+            // Plain text content should not have "mime" header. Clear it.
+            headers?.removeValue(forKey: "mime")
         }
 
         return tinode!.publish(topic: name, head: headers, content: content, attachments: attachments).then(
@@ -1236,19 +1261,36 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
     ///   - withExtraHeaders: additional message headers, such as `reply` and `forwarded`; `mime: text/x-drafty` header is added automatically.
     /// - Returns: `PromisedReply` of the reply `ctrl` message
     public func publish(content: Drafty, withExtraHeaders extraHeaders: [String: JSONValue]? = nil) -> PromisedReply<ServerMessage> {
+        var head: [String: JSONValue]? = nil
+        if !content.isPlain || (!(extraHeaders?.isEmpty ?? true)) {
+            head = [:]
+            if let extra = extraHeaders {
+                head!.merge(extra) { (_, new) in new }
+            }
+            if !content.isPlain {
+                head!["mime"] = .string(Drafty.kMimeType)
+            }
+            if head!["webrtc"] != nil {
+                content.updateVideoEnt(withParams: head, isIncoming: false)
+            }
+        }
+
         var id: Int64 = -1
         if let s = store {
-            if let msg = s.msgSend(topic: self, data: content, head: extraHeaders) {
+            if let msg = s.msgSend(topic: self, data: content, head: head) {
                 self.latestMessage = msg
                 id = msg.msgId
             }
         }
+        if id < 0 {
+            return PromisedReply(error: TopicError.messageDraftFailure("Topic[\(self.name)]: could not save message draft"))
+        }
         if attached {
-            return publishInternal(content: content, head: extraHeaders, msgId: id)
+            return publishInternal(content: content, head: head, msgId: id)
         } else {
             return subscribe()
                 .thenApply({ [weak self] _ in
-                    return self?.publishInternal(content: content, head: extraHeaders, msgId: id)
+                    return self?.publishInternal(content: content, head: head, msgId: id)
                 }).thenCatch({ [weak self] err in
                     self?.store?.msgSyncing(topic: self!, dbMessageId: id, sync: false)
                     throw err
@@ -1291,12 +1333,42 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         return PromisedReply<ServerMessage>(error: TinodeError.notConnected("Tinode not connected."))
     }
 
+    private func delMessages(inRanges ranges: [MsgRange], hard: Bool) -> PromisedReply<ServerMessage> {
+        store?.msgMarkToDelete(topic: self, ranges: ranges, markAsHard: hard)
+        if attached {
+            return tinode!.delMessage(topicName: self.name, ranges: ranges, hard: hard).then(
+                onSuccess: { [weak self] msg in
+                    if let s = self, let delId = msg?.ctrl?.getIntParam(for: "del"), delId > 0 {
+                        if (s.clear ?? 0) < delId {
+                            s.clear = delId
+                        }
+                        if s.maxDel < delId {
+                            s.maxDel = delId
+                        }
+                        s.store?.msgDelete(topic: s, delete: delId, deleteAllIn: ranges)
+                    }
+                    return nil
+                })
+        }
+        if tinode?.isConnected ?? false {
+            return PromisedReply<ServerMessage>(error: TinodeError.notSubscribed("Not subscribed to topic."))
+        }
+        return PromisedReply<ServerMessage>(error: TinodeError.notConnected("Tinode not connected."))
+    }
+
     public func delMessages(hard: Bool) -> PromisedReply<ServerMessage> {
         return delMessages(from: 0, to: (self.seq ?? 0) + 1, hard: hard)
     }
 
     public func delMessage(id: Int, hard: Bool)  -> PromisedReply<ServerMessage> {
         return delMessages(from: id, to: id + 1, hard: hard)
+    }
+
+    public func delMessages(ids: [Int], hard: Bool) -> PromisedReply<ServerMessage> {
+        guard let l = MsgRange.listToRanges(ids) else {
+            return PromisedReply<ServerMessage>(error: TopicError.deleteFailure("No messages to delete"))
+        }
+        return delMessages(inRanges: l, hard: hard)
     }
 
     public func syncOne(msgId: Int64) -> PromisedReply<ServerMessage> {
@@ -1329,7 +1401,12 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
         }
         for msg in pendingMsgs {
             let msgId = msg.msgId
-            _ = self.store?.msgSyncing(topic: self, dbMessageId: msgId, sync: true)
+            if msg.head?["webrtc"]?.asString() != nil {
+                // Drop unsent video call messages.
+                self.store?.msgDiscard(topic: self, dbMessageId: msgId)
+                continue
+            }
+            self.store?.msgSyncing(topic: self, dbMessageId: msgId, sync: true)
             result = self.publishInternal(content: msg.content!, head: msg.head, msgId: msgId)
         }
         return result
@@ -1345,5 +1422,9 @@ open class Topic<DP: Codable & Mergeable, DR: Codable & Mergeable, SP: Codable, 
                 return nil
             })
         }
+    }
+
+    public func getMessage(byEffectiveSeq seqId: Int) -> Message? {
+        return store?.getMessage(fromTopic: self, byEffectiveSeqId: seqId)
     }
 }

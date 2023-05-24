@@ -41,7 +41,7 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
 
     // Entity data field names which will be processed.
     private static let kKnownDataFelds =
-            ["act", "height", "mime", "name", "ref", "size", "title", "url", "val", "width"]
+        ["act", "duration", "height", "incoming", "mime", "name", "premime", "preview", "preref", "ref", "size", "state", "title", "url", "val", "width"]
 
     // Regular expressions for parsing inline formats.
     private static let kInlineStyles = try! [
@@ -441,10 +441,13 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
         var result: [String] = []
         for anEnt in ent {
             if let ref = anEnt.data?["ref"] {
-                switch ref {
-                case .string(let str):
+                if case .string(let str) = ref {
                     result.append(str)
-                default: break
+                }
+            }
+            if let preref = anEnt.data?["preref"] {
+                if case .string(let str) = preref {
+                    result.append(str)
                 }
             }
         }
@@ -479,6 +482,114 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
         if fmt == nil {
             fmt = []
         }
+    }
+
+    /// Insert audio message.
+    ///
+    /// - Parameters:
+    ///     - at: location to insert audio at
+    ///     - mime: Content-type, such as 'image/jpeg'.
+    ///     - bits: Content as an array of bytes
+    ///     - preview: an array of amplitudes to use as preview.
+    ///     - duration:record duration in milliseconds.
+    ///     - fname: name of the file to suggest to the receiver.
+    ///     - refurl: Reference to full/extended image.
+    ///     - size: file size hint (in bytes) as reported by the client.
+    /// - Returns: 'self' Drafty object.
+    public func insertAudio(at: Int, mime: String?, bits: Data?, preview: Data, duration: Int, fname: String?, refurl: URL?, size: Int) throws -> Drafty {
+        guard bits != nil || refurl != nil else {
+            throw DraftyError.illegalArgument("Either image bits or reference URL must not be null.")
+        }
+
+        guard txt.count > at && at >= 0 else {
+            throw DraftyError.invalidIndex("Invalid insertion position")
+        }
+
+        prepareForEntity(at: at, len: 1)
+
+        var data: [String: JSONValue] = [:]
+        if let mime = mime, !mime.isEmpty {
+            data["mime"] = JSONValue.string(mime)
+        }
+        if let bits = bits {
+            data["val"] = JSONValue.bytes(bits)
+        }
+        data["preview"] = JSONValue.bytes(preview)
+        data["duration"] = JSONValue.int(duration)
+        if let fname = fname, !fname.isEmpty {
+            data["name"] = JSONValue.string(fname)
+        }
+        if let refurl = refurl {
+            data["ref"] = JSONValue.string(refurl.absoluteString)
+        }
+        if size > 0 {
+            data["size"] = JSONValue.int(size)
+        }
+        ent!.append(Entity(tp: "AU", data: data))
+
+        return self
+    }
+
+    /// Insert video message.
+    ///
+    /// - Parameters:
+    ///     - at: location to insert audio at
+    ///     - mime: Content-type, such as 'video/mp4'.
+    ///     - bits: Content as an array of bytes
+    ///     - preview: an array of amplitudes to use as preview.
+    ///     - duration:record duration in milliseconds.
+    ///     - fname: name of the file to suggest to the receiver.
+    ///     - refurl: reference to full/extended video.
+    ///     - size: file size hint (in bytes) as reported by the client.
+    ///     - previewRef: reference to preview image.
+    /// - Returns: 'self' Drafty object.
+    public func insertVideo(at: Int,
+                            mime: String, bits: Data?, refurl: URL?,
+                            duration: Int, width: Int, height: Int, fname: String?, size: Int,
+                            preMime: String?, preview: Data?, previewRef: URL?) throws -> Drafty {
+        guard bits != nil || refurl != nil else {
+            throw DraftyError.illegalArgument("Either image bits or reference URL must not be null.")
+        }
+
+        guard txt.count > at && at >= 0 else {
+            throw DraftyError.invalidIndex("Invalid insertion position")
+        }
+
+        prepareForEntity(at: at, len: 1)
+
+        var data: [String: JSONValue] = [:]
+        if !mime.isEmpty {
+            data["mime"] = .string(mime)
+        }
+        if let bits = bits {
+            data["val"] = .bytes(bits)
+        }
+        if let refurl = refurl {
+            data["ref"] = .string(refurl.absoluteString)
+        }
+        data["duration"] = .int(duration)
+        if let fname = fname, !fname.isEmpty {
+            data["name"] = .string(fname)
+        }
+        data["height"] = .int(height)
+        data["width"] = .int(width)
+        if size > 0 {
+            data["size"] = .int(size)
+        }
+
+        if let preMime = preMime, !preMime.isEmpty {
+            data["premime"] = .string(preMime)
+        }
+        if let preview = preview {
+            data["preview"] = .bytes(preview)
+        }
+        if let previewRef = previewRef {
+            data["preref"] = .string(previewRef.absoluteString)
+        }
+
+        ent!.append(Entity(tp: "VD", data: data))
+
+        return self
     }
 
     /// Insert inline image
@@ -627,6 +738,16 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
         let d = Drafty(plainText: name)
         d.fmt = [Style(at: 0, len: name.count, key: 0)]
         d.ent = [Entity(tp: "MN", data: ["val": JSONValue.string(uid)])]
+        return d
+    }
+
+    /// Create a Drafty document consisting of a single video call.
+    ///
+    /// - Returns: new Drafty object representing a video call.
+    public static func videoCall() -> Drafty {
+        let d = Drafty(plainText: " ")
+        d.fmt = [Style(at: 0, len: 1, key: 0)]
+        d.ent = [Entity(tp: "VC", data: nil)]
         return d
     }
 
@@ -1076,12 +1197,13 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
             allowed = nil
             forTypes = nil
         }
-        init(allowedFields: [String], forTypes: [String]?) {
+        init(allowedFields: [String], forTypes: [String]) {
             self.allowed = allowedFields
             self.forTypes = forTypes
         }
+        // Example: (type: "IM", field: "val")
         private func isAllowed(type: String, field: String) -> Bool {
-            return (allowed == nil || allowed!.contains(field)) && (forTypes == nil || forTypes!.contains(type))
+            return (allowed?.contains(field) ?? false) && (forTypes?.contains(type) ?? false)
         }
         func transform(node: Drafty.Span) -> Drafty.Span? {
             node.data = copyEntData(type: node.type, data: node.data, maxLength: Drafty.kMaxPreviewDataSize)
@@ -1147,6 +1269,7 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
     }
 
     /// Creates a shortened and trimmed preview of the Drafty object:
+    ///   Convert full mention '➦ John Dow' to a single ➦ character.
     ///   Move attachments to the end of the document.
     ///   Trim the document to specified length.
     ///   Convert the first mention to a single character
@@ -1182,7 +1305,8 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
         }
         tree = SpanTreeProcessor.treeTopDown(tree: tree, using: Preview()) ?? tree
         tree = SpanTreeProcessor.treeTopDown(tree: tree, using: ShorteningTransformer(length: previewLen, tail: "…")) ?? tree
-        tree = SpanTreeProcessor.treeTopDown(tree: tree, using: LightCopyTransformer()) ?? tree
+        tree = SpanTreeProcessor.treeTopDown(tree: tree, using: LightCopyTransformer(
+            allowedFields: ["state", "incoming", "preview", "preref", "val", "ref"], forTypes: ["IM", "VC", "VD"])) ?? tree
 
         var keymap = [Int: Int]()
         var result = Drafty()
@@ -1196,7 +1320,7 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
     public func forwardedContent() -> Drafty {
         var tree = Span()
         tree = SpanTreeProcessor.toTree(contentOf: self) ?? tree
-        // Strip leading mention.
+        // Strip leading mention to avoid nested mentions in multiple forwards.
         class Forward : DraftyTransformer {
             required init() {}
             func transform(node: Drafty.Span) -> Drafty.Span? {
@@ -1262,7 +1386,7 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
         tree = SpanTreeProcessor.attachmentsToEnd(tree: tree, maxAttachments: maxAttachments) ?? tree
         // Shorten the doc.
         tree = SpanTreeProcessor.treeTopDown(tree: tree, using: ShorteningTransformer(length: length, tail: "…")) ?? tree
-        tree = SpanTreeProcessor.treeTopDown(tree: tree, using: LightCopyTransformer(allowedFields: ["val"], forTypes: ["IM"])) ?? tree
+        tree = SpanTreeProcessor.treeTopDown(tree: tree, using: LightCopyTransformer(allowedFields: ["val", "preview", "preref"], forTypes: ["IM", "VD"])) ?? tree
 
         // Convert back to Drafty.
         var keymap = [Int: Int]()
@@ -1284,8 +1408,11 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
         return result
     }
 
-    /// Mostly for testing: convert Drafty to a markdown string.
-    public func toMarkdown() -> String {
+    /// Convert Drafty to a markdown string.
+    /// - Parameters:
+    ///     - plainLinks: links should be written as plain text, without any formatting.
+    /// - Returns: markdown string.
+    public func toMarkdown(withPlainLinks plainLinks: Bool) -> String {
         var tree = Span()
         tree = SpanTreeProcessor.toTree(contentOf: self) ?? tree
 
@@ -1297,6 +1424,10 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
         }
 
         class Formatter : DraftyFormatter {
+            private var plainLinks: Bool
+            init(usePlainLinks plainLinks: Bool) {
+                self.plainLinks = plainLinks
+            }
             func apply(type: String?, data: [String : JSONValue]?, key: Int?, content: [FormattedString], stack: [String]?) -> FormattedString {
                 var res = ""
                 for ws in content {
@@ -1323,8 +1454,10 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
                 case "CO":
                     res = "`" + res + "`"
                 case "LN":
-                    let url = data?["url"]?.asString() ?? "nil"
-                    res = "[" + res + "](" + url + ")"
+                    if !plainLinks {
+                        let url = data?["url"]?.asString() ?? "nil"
+                        res = "[" + res + "](" + url + ")"
+                    }
                 default:
                     break
                 }
@@ -1337,11 +1470,30 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
             }
         }
         var stack: [String]? = []
-        let result = SpanTreeProcessor.treeBottomUp(src: tree, formatter: Formatter(), stack: &stack, resultType: WrappedString.self)
+        let result = SpanTreeProcessor.treeBottomUp(src: tree, formatter: Formatter(usePlainLinks: plainLinks), stack: &stack, resultType: WrappedString.self)
         return result?.string ?? ""
     }
 
-
+    public func updateVideoEnt(withParams params: [String: JSONValue]?, isIncoming: Bool) {
+        guard let fmt = self.fmt, !fmt.isEmpty, let params = params, fmt.first!.tp != "VC" else {
+            return
+        }
+        let st = fmt.first!
+        if st.tp != nil {
+            // Just a format, convert to format + entity.
+            st.tp = nil
+            st.key = 0
+            self.ent = [Entity(tp: "VC", data: [:])]
+        }
+        guard let ent = self.ent, !ent.isEmpty, ent.first!.tp == "VC" else { return }
+        let e = ent.first!
+        if e.data == nil {
+            e.data = [:]
+        }
+        e.data!["state"] = params["webrtc"]
+        e.data!["duration"] = params["webrtc-duration"]
+        e.data!["incoming"] = .bool(isIncoming)
+    }
 
     /// Format converts Drafty object into a collection of nodes with format definitions.
     /// Each node contains either a formatted element or a collection of formatted elements.
@@ -1560,10 +1712,10 @@ open class Drafty: Codable, CustomStringConvertible, Equatable {
 
 /// Representation of inline styles or entity references.
 public class Style: Codable, CustomStringConvertible, Equatable {
-    var at: Int
-    var len: Int
-    var tp: String?
-    var key: Int?
+    public var at: Int
+    public var len: Int
+    public var tp: String?
+    public var key: Int?
 
     private enum CodingKeys: String, CodingKey {
         case at = "at"

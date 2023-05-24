@@ -7,7 +7,7 @@
 
 import Foundation
 
-public class MsgServerCtrl: Decodable {
+public class MsgServerCtrl: Codable {
     public let id: String?
     public let topic: String?
     public let code: Int
@@ -64,14 +64,24 @@ public class MsgServerCtrl: Decodable {
         }
         return nil
     }
+
+    // Testing only.
+    internal init(id: String?, topic: String?, code: Int, text: String, ts: Date, params: [String: JSONValue]?) {
+        self.id = id
+        self.topic = topic
+        self.code = code
+        self.text = text
+        self.ts = ts
+        self.params = params
+    }
 }
 
-public class DelValues: Decodable {
+public class DelValues: Codable {
     let clear: Int
     let delseq: [MsgRange]
 }
 
-public class MsgServerMeta: Decodable {
+public class MsgServerMeta: Codable {
     public let id: String?
     public let topic: String?
     public let ts: Date?
@@ -84,6 +94,7 @@ public class MsgServerMeta: Decodable {
     private enum CodingKeys: String, CodingKey {
         case id, topic, ts, desc, sub, del, tags, cred
     }
+
     required public init (from decoder: Decoder) throws {
         let container =  try decoder.container(keyedBy: CodingKeys.self)
         id = try? container.decode(String.self, forKey: .id)
@@ -103,9 +114,53 @@ public class MsgServerMeta: Decodable {
             sub = try? container.decode(Array<DefaultSubscription>.self, forKey: .sub)
         }
     }
+
+    public func encode(to encoder: Encoder) throws {
+        // Used in testing only.
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let id = id { try container.encode(id, forKey: .id) }
+        if let topic = topic { try container.encode(topic, forKey: .topic) }
+        if let ts = ts { try container.encode(ts, forKey: .ts) }
+        if let del = del { try container.encode(del, forKey: .del) }
+        if let tags = tags { try container.encode(tags, forKey: .tags) }
+        if let cred = cred { try container.encode(cred, forKey: .cred) }
+        if topic == Tinode.kTopicMe {
+            if let desc = desc as? DefaultDescription { try container.encode(desc, forKey: .desc) }
+            if let sub = sub as? Array<DefaultSubscription> { try container.encode(sub, forKey: .sub) }
+        } else if topic == Tinode.kTopicFnd {
+            if let desc = desc as? FndDescription { try container.encode(desc, forKey: .desc) }
+            if let sub = sub as? Array<FndSubscription> { try container.encode(sub, forKey: .sub) }
+        } else {
+            if let desc = desc as? DefaultDescription { try container.encode(desc, forKey: .desc) }
+            if let sub = sub as? Array<DefaultSubscription> { try container.encode(sub, forKey: .sub) }
+        }
+    }
+
+    // Testing only.
+    internal init(id: String?, topic: String?, ts: Date, desc: DescriptionProto?,
+                sub: [SubscriptionProto]?, del: DelValues?, tags: [String]?, cred: [Credential]?) {
+        self.id = id
+        self.topic = topic
+        self.ts = ts
+        self.desc = desc
+        self.sub = sub
+        self.del = del
+        self.tags = tags
+        self.cred = cred
+    }
 }
 
-open class MsgServerData: Decodable {
+open class MsgServerData: Codable {
+    public enum WebRTC: String {
+        case kAccepted = "accepted"
+        case kBusy = "busy"
+        case kDeclined = "declined"
+        case kDisconnected = "disconnected"
+        case kFinished = "finished"
+        case kMissed = "missed"
+        case kStarted = "started"
+    }
+
     public var id: String?
     public var topic: String?
     public var head: [String: JSONValue]?
@@ -116,9 +171,43 @@ open class MsgServerData: Decodable {
     // todo: make it drafty
     public var content: Drafty?
     public init() {}
+
+    /// Returns seq id (if any) this message is intended to replace.
+    public var replacesSeq: Int? {
+        // Returns seq id (if any) this message is intended to replace.
+        guard let replaceStr = self.head?["replace"]?.asString() else {
+            return nil
+        }
+        let parts = replaceStr.components(separatedBy: ":")   // split(separator: ":")
+        guard parts.count == 2 else { return nil }
+        return Int(parts[1])
+    }
+
+    /// Returns the video call state this message represents (nil for non-call messages).
+    public var webrtcCallState: WebRTC? {
+        guard let str = self.head?["webrtc"]?.asString() else { return nil }
+        return WebRTC(rawValue: str)
+    }
+
+    /// Returns true if the message is marked "audio-only" (makes sense only if it's a call).
+    public var isAudioOnlyCall: Bool {
+        return self.head?["aonly"]?.asBool() ?? false
+    }
+
+    // Testing only.
+    internal init(id: String?, topic: String?, from: String?, ts: Date?,
+                  head: [String: JSONValue]?, seq: Int?, content: Drafty?) {
+        self.id = id
+        self.topic = topic
+        self.from = from
+        self.ts = ts
+        self.head = head
+        self.seq = seq
+        self.content = content
+    }
 }
 
-public class AccessChange: Decodable {
+public class AccessChange: Codable {
     let want: String?
     let given: String?
 
@@ -127,7 +216,7 @@ public class AccessChange: Decodable {
     }
 }
 
-public class MsgServerPres: Decodable {
+public class MsgServerPres: Codable {
     enum What {
         case kOn, kOff, kUpd, kGone, kTerm, kAcs, kMsg, kUa, kRecv, kRead, kDel, kTags, kUnknown
     }
@@ -177,15 +266,19 @@ public class MsgServerPres: Decodable {
     }
 }
 
-public class MsgServerInfo: Decodable {
+public class MsgServerInfo: Codable {
     public var topic: String?
     public var src: String?
     public var from: String?
     public var what: String?
     public var seq: Int?
+    // "event" and "payload" are video call event and its associated JSON payload.
+    // Set only when what="call".
+    public var event: String?
+    public var payload: JSONValue?
 }
 
-public class ServerMessage: Decodable {
+public class ServerMessage: Codable {
     // RFC 7231 HTTP status messages
     // https://tools.ietf.org/html/rfc7231#section-6
     public static let kStatusOk                  = 200 // 6.3.1
